@@ -1,5 +1,8 @@
 # Gatelet
 
+[![CI](https://github.com/alex-oleshkevich/gatelet/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-oleshkevich/gatelet/actions/workflows/ci.yml)
+[![Release](https://github.com/alex-oleshkevich/gatelet/actions/workflows/release.yml/badge.svg)](https://github.com/alex-oleshkevich/gatelet/actions/workflows/release.yml)
+
 Gatelet exposes a local HTTP service through a stable public subdomain. It is a small ngrok-style tunnel with two binaries:
 
 | Binary | Purpose |
@@ -34,6 +37,8 @@ Gatelet currently supports HTTP tunneling only. Public HTTP TLS termination, aut
 Clone the repository and build both binaries:
 
 ```sh
+git clone https://github.com/alex-oleshkevich/gatelet.git
+cd gatelet
 go build -o bin/gateletd ./cmd/gateletd
 go build -o bin/gatelet ./cmd/gatelet
 ```
@@ -41,8 +46,8 @@ go build -o bin/gatelet ./cmd/gatelet
 Or install them into your Go binary directory:
 
 ```sh
-go install ./cmd/gateletd
-go install ./cmd/gatelet
+go install github.com/alex-oleshkevich/gatelet/cmd/gateletd@latest
+go install github.com/alex-oleshkevich/gatelet/cmd/gatelet@latest
 ```
 
 Make sure your Go binary directory is on `PATH`:
@@ -52,6 +57,17 @@ go env GOPATH
 ```
 
 The binaries are usually installed into `$(go env GOPATH)/bin`.
+
+## Binary Releases
+
+Tagged releases publish prebuilt `gatelet` and `gateletd` archives for Linux and macOS on amd64 and arm64:
+
+```sh
+curl -L https://github.com/alex-oleshkevich/gatelet/releases/latest/download/gatelet_linux_amd64.tar.gz -o gatelet_linux_amd64.tar.gz
+tar -xzf gatelet_linux_amd64.tar.gz
+```
+
+Release archives include both binaries and `README.md`. Verify downloads with the `checksums.txt` file attached to each GitHub release.
 
 ## Local Smoke Test
 
@@ -314,6 +330,8 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 
 ## Development
 
+CI runs on pushes and pull requests. The workflow runs unit tests, `go vet`, binary builds, `golangci-lint`, and the Docker E2E smoke test.
+
 Run tests:
 
 ```sh
@@ -340,6 +358,17 @@ Build both binaries:
 go build -o /tmp/gateletd ./cmd/gateletd
 go build -o /tmp/gatelet ./cmd/gatelet
 ```
+
+## Release Process
+
+Releases are created from semantic version tags. The release workflow accepts tags such as `v0.1.0` and `v0.1.0-rc.1`.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GoReleaser builds `gatelet` and `gateletd`, creates Linux and macOS archives, writes checksums, and publishes the GitHub release.
 
 ## Limitations
 
