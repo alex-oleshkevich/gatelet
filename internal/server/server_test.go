@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +113,83 @@ func TestServerReturnsLocalRedirectWithoutFollowingIt(t *testing.T) {
 	}
 	if got := res.Header.Get("Location"); got != "/login" {
 		t.Fatalf("Location = %q, want %q", got, "/login")
+	}
+}
+
+func TestServerReplacesTunnelAndRoutesToNewClient(t *testing.T) {
+	firstLocal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first"))
+	}))
+	defer firstLocal.Close()
+	secondLocal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer secondLocal.Close()
+
+	var logs lockedBuffer
+	control := listenLocal(t)
+	defer control.Close()
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- client.Run(ctx, client.Config{
+			Name:       "alex",
+			ServerAddr: control.Addr().String(),
+			Target:     firstLocal.URL,
+			Token:      "dev-token",
+		})
+	}()
+	waitForTunnel(t, relay, "alex")
+
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:       "alex",
+			ServerAddr: control.Addr().String(),
+			Target:     secondLocal.URL,
+			Token:      "dev-token",
+		})
+	}()
+	waitForLog(t, &logs, "tunnel replaced")
+
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first client returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first client stayed connected after replacement")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	res := rec.Result()
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if string(body) != "second" {
+		t.Fatalf("body = %q, want second client", string(body))
+	}
+
+	logText := logs.String()
+	for _, want := range []string{"tunnel replaced", "old_remote=", "new_remote=", "reason=name_reconnect"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("logs missing %q:\n%s", want, logText)
+		}
 	}
 }
 
@@ -504,6 +582,37 @@ func waitForNoTunnel(t *testing.T, relay *Server, name string) {
 	}
 
 	t.Fatalf("timed out waiting for tunnel %q to disappear", name)
+}
+
+func waitForLog(t *testing.T, logs interface{ String() string }, needle string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(logs.String(), needle) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for log %q:\n%s", needle, logs.String())
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func authenticateRawControl(t *testing.T, addr, name, token string) net.Conn {

@@ -275,7 +275,7 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 ## Operational Notes
 
 - `gateletd` keeps tunnel registrations in memory. Restarting the relay disconnects active tunnels.
-- If a second client registers the same name, it replaces the previous tunnel.
+- If a second client registers the same name, it atomically replaces the previous tunnel. The old control session is closed and `gateletd` logs the tunnel name plus old and new remote addresses.
 - Requests for unknown tunnel names return `404`.
 - Broken or unavailable tunnels return `502`.
 - Hostnames are matched case-insensitively and may include a trailing dot.

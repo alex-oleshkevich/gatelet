@@ -42,7 +42,12 @@ type Server struct {
 	heartbeatTimeout  time.Duration
 
 	mu       sync.RWMutex
-	sessions map[string]*yamux.Session
+	sessions map[string]*tunnelSession
+}
+
+type tunnelSession struct {
+	session *yamux.Session
+	remote  string
 }
 
 func New(config Config) *Server {
@@ -56,7 +61,7 @@ func New(config Config) *Server {
 		logger:            logger,
 		heartbeatInterval: config.HeartbeatInterval,
 		heartbeatTimeout:  config.HeartbeatTimeout,
-		sessions:          make(map[string]*yamux.Session),
+		sessions:          make(map[string]*tunnelSession),
 	}
 }
 
@@ -84,8 +89,8 @@ func (s *Server) HasTunnel(name string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	session := s.sessions[name]
-	return session != nil && !session.IsClosed()
+	tunnel := s.sessions[name]
+	return tunnel != nil && !tunnel.session.IsClosed()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -213,30 +218,37 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		return
 	}
 
-	s.register(hello.Name, session)
+	s.register(hello.Name, session, remote)
 	<-session.CloseChan()
-	s.unregister(hello.Name, session)
+	s.unregister(hello.Name, session, remote)
 }
 
-func (s *Server) register(name string, session *yamux.Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if old := s.sessions[name]; old != nil {
-		s.logger.Info("replacing existing tunnel", "name", name, "url", "https://"+name+"."+s.domain)
-		_ = old.Close()
+func (s *Server) register(name string, session *yamux.Session, remote string) {
+	record := &tunnelSession{
+		session: session,
+		remote:  remote,
 	}
-	s.sessions[name] = session
-	s.logger.Info("tunnel registered", "name", name, "url", "https://"+name+"."+s.domain)
+
+	s.mu.Lock()
+	old := s.sessions[name]
+	s.sessions[name] = record
+	s.mu.Unlock()
+
+	if old != nil {
+		s.logger.Info("tunnel replaced", "name", name, "url", "https://"+name+"."+s.domain, "old_remote", old.remote, "new_remote", remote, "reason", "name_reconnect")
+		_ = old.session.Close()
+	} else {
+		s.logger.Info("tunnel registered", "name", name, "url", "https://"+name+"."+s.domain, "remote", remote)
+	}
 }
 
-func (s *Server) unregister(name string, session *yamux.Session) {
+func (s *Server) unregister(name string, session *yamux.Session, remote string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.sessions[name] == session {
+	if current := s.sessions[name]; current != nil && current.session == session {
 		delete(s.sessions, name)
-		s.logger.Info("tunnel unregistered", "name", name, "url", "https://"+name+"."+s.domain)
+		s.logger.Info("tunnel unregistered", "name", name, "url", "https://"+name+"."+s.domain, "remote", remote)
 	}
 }
 
@@ -244,11 +256,11 @@ func (s *Server) session(name string) *yamux.Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	session := s.sessions[name]
-	if session == nil || session.IsClosed() {
+	tunnel := s.sessions[name]
+	if tunnel == nil || tunnel.session.IsClosed() {
 		return nil
 	}
-	return session
+	return tunnel.session
 }
 
 func (s *Server) nameFromHost(host string) (string, bool) {
