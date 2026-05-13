@@ -1,8 +1,5 @@
 # Gatelet
 
-[![CI](https://github.com/alex-oleshkevich/gatelet/actions/workflows/ci.yml/badge.svg)](https://github.com/alex-oleshkevich/gatelet/actions/workflows/ci.yml)
-[![Release](https://github.com/alex-oleshkevich/gatelet/actions/workflows/release.yml/badge.svg)](https://github.com/alex-oleshkevich/gatelet/actions/workflows/release.yml)
-
 Gatelet exposes a local HTTP service through a stable public subdomain. It is a small ngrok-style tunnel with two binaries:
 
 | Binary | Purpose |
@@ -14,13 +11,13 @@ Gatelet exposes a local HTTP service through a stable public subdomain. It is a 
 
 ```mermaid
 flowchart LR
-    Browser[Browser] -->|HTTP Host: alex.example.com| Relay[gateletd]
+    Browser[Browser] -->|HTTP Host: demo.example.com| Relay[gateletd]
     Relay -->|yamux stream over TLS control connection| Client[gatelet]
     Client -->|HTTP| Local[localhost:3000]
     Local --> Client --> Relay --> Browser
 ```
 
-`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `alex`. The control connection can use raw TCP/TLS or WebSocket over the HTTP listener at `/__gatelet/control`. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
+`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `demo`. The control connection can use raw TCP/TLS or WebSocket over the HTTP listener at `/__gatelet/control`. When `gateletd` receives an HTTP request for `demo.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
 
 ## Current Scope
 
@@ -37,7 +34,7 @@ Gatelet currently supports HTTP tunneling only. Public HTTP TLS termination, aut
 Clone the repository and build both binaries:
 
 ```sh
-git clone https://github.com/alex-oleshkevich/gatelet.git
+git clone https://github.com/your-org/gatelet.git
 cd gatelet
 go build -o bin/gateletd ./cmd/gateletd
 go build -o bin/gatelet ./cmd/gatelet
@@ -46,8 +43,8 @@ go build -o bin/gatelet ./cmd/gatelet
 Or install them into your Go binary directory:
 
 ```sh
-go install github.com/alex-oleshkevich/gatelet/cmd/gateletd@latest
-go install github.com/alex-oleshkevich/gatelet/cmd/gatelet@latest
+go install github.com/your-org/gatelet/cmd/gateletd@latest
+go install github.com/your-org/gatelet/cmd/gatelet@latest
 ```
 
 Make sure your Go binary directory is on `PATH`:
@@ -63,7 +60,7 @@ The binaries are usually installed into `$(go env GOPATH)/bin`.
 Tagged releases publish prebuilt `gatelet` and `gateletd` archives for Linux and macOS on amd64 and arm64:
 
 ```sh
-curl -L https://github.com/alex-oleshkevich/gatelet/releases/latest/download/gatelet_linux_amd64.tar.gz -o gatelet_linux_amd64.tar.gz
+curl -L https://github.com/your-org/gatelet/releases/latest/download/gatelet_linux_amd64.tar.gz -o gatelet_linux_amd64.tar.gz
 tar -xzf gatelet_linux_amd64.tar.gz
 ```
 
@@ -96,13 +93,13 @@ gateletd --domain example.test --http 127.0.0.1:8080 --control 127.0.0.1:4443 --
 Start the tunnel client:
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext
+gatelet demo http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext
 ```
 
 Plain client mode prints one line for each completed or failed incoming request:
 
 ```text
-url https://alex.example.test
+url https://demo.example.test
 target http://127.0.0.1:3000
 GET /path?query 200 0B 203.0.113.44
 POST /api/items 500 1.4kb 203.0.113.44
@@ -113,13 +110,13 @@ Use `--log-format jsonl` or `--log-format json` when piping request summaries in
 For an interactive local dashboard, add `--tui`:
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext --tui
+gatelet demo http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext --tui
 ```
 
 Send a request through the relay:
 
 ```sh
-curl -H 'Host: alex.example.test' http://127.0.0.1:8080/
+curl -H 'Host: demo.example.test' http://127.0.0.1:8080/
 ```
 
 The response should come from the local web service.
@@ -151,7 +148,7 @@ Raw TCP control is still available on `--control`, default `:4443`. Add `--contr
 Run `gatelet` on your local machine:
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --token-id current
+gatelet demo http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --token-id current
 ```
 
 The client also reads `GATELET_SERVER`, `GATELET_TOKEN`, and `GATELET_TOKEN_ID` when `--server`, `--token`, or `--token-id` are omitted. If a `wss://` endpoint or raw TLS control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments with raw TCP control and no TLS.
@@ -159,7 +156,7 @@ The client also reads `GATELET_SERVER`, `GATELET_TOKEN`, and `GATELET_TOKEN_ID` 
 Then open:
 
 ```text
-http://alex.example.com
+http://demo.example.com
 ```
 
 ## Compose Deployment
@@ -169,13 +166,13 @@ Use `compose.example.yml` for local Docker Compose testing and keep deployment-s
 The local `compose.yml` in this repository is set up for:
 
 ```text
-tun.aresa.me
+tun.example.com
 ```
 
-That means a tunnel named `alex` is served as:
+That means a tunnel named `demo` is served as:
 
 ```text
-alex.tun.aresa.me
+demo.tun.example.com
 ```
 
 Set a token before starting the service locally:
@@ -193,12 +190,12 @@ For Uncloud, deploy the compose file with `uc` from the host or project where yo
 GATELET_TOKEN='replace-with-a-long-random-token' uc deploy -f compose.yml
 ```
 
-The ignored `compose.yml` uses Uncloud `x-ports`. In Uncloud, public HTTPS traffic is routed by Caddy for `*.tun.aresa.me`, and WebSocket control can share the same HTTPS route on the base host:
+The ignored `compose.yml` uses Uncloud `x-ports`. In Uncloud, public HTTPS traffic is routed by Caddy for `*.tun.example.com`, and WebSocket control can share the same HTTPS route on the base host:
 
 | Published endpoint | Container port | Purpose |
 |---|---|---|
-| `*.tun.aresa.me/https` | `8080` | Public HTTPS tunnel traffic via Caddy |
-| `tun.aresa.me/__gatelet/control` | `8080` | WebSocket client control connection |
+| `*.tun.example.com/https` | `8080` | Public HTTPS tunnel traffic via Caddy |
+| `tun.example.com/__gatelet/control` | `8080` | WebSocket client control connection |
 | `4443/tcp@host` | `4443` | Optional raw TCP client control connection |
 
 ### Caddy and Uncloud Quirks
@@ -211,12 +208,12 @@ Use both the base host and wildcard host in the Gatelet service:
 services:
   gateletd:
     x-ports:
-      - "tun.aresa.me:8080/https"
-      - "*.tun.aresa.me:8080/https"
+      - "tun.example.com:8080/https"
+      - "*.tun.example.com:8080/https"
       - "4443:4443/tcp@host"
 ```
 
-The base host is required for WebSocket control at `wss://tun.aresa.me/__gatelet/control`. The wildcard host is required for tunnel traffic such as `https://alex.tun.aresa.me`. If one of those hosts is missing, clients can fail with TLS errors such as `tls: internal error` before the request reaches `gateletd`.
+The base host is required for WebSocket control at `wss://tun.example.com/__gatelet/control`. The wildcard host is required for tunnel traffic such as `https://demo.tun.example.com`. If one of those hosts is missing, clients can fail with TLS errors such as `tls: internal error` before the request reaches `gateletd`.
 
 Do not mix Docker Compose `ports` and Uncloud `x-ports` on the same service. Uncloud rejects a service that specifies both. For local Docker Compose, use `compose.example.yml`; for Uncloud deployment, use an ignored deployment-specific `compose.yml` with `x-ports`.
 
@@ -241,9 +238,9 @@ Create wildcard DNS records that point at the public server:
 | `example.com` | `A` or `AAAA` | Public server IP |
 | `*.example.com` | `A` or `AAAA` | Public server IP |
 
-Wildcard DNS is required so tunnel names such as `alex.example.com`, `api.example.com`, and `demo.example.com` all reach the relay.
+Wildcard DNS is required so tunnel names such as `demo.example.com`, `api.example.com`, and `preview.example.com` all reach the relay.
 
-For `tun.aresa.me` on Cloudflare, create records in the `aresa.me` zone:
+For `tun.example.com` on Cloudflare, create records in the `example.com` zone:
 
 | Type | Name | Content | Proxy status |
 |---|---|---|---|
@@ -261,7 +258,7 @@ With WebSocket control, Cloudflare can proxy normal HTTPS/WebSocket traffic on p
 
 Cloudflare dashboard path:
 
-1. Open the `aresa.me` zone.
+1. Open the `example.com` zone.
 2. Go to **DNS** -> **Records**.
 3. Add `tun` and `*.tun` records.
 4. Set proxy status to **DNS only**.
@@ -274,7 +271,7 @@ curl https://api.cloudflare.com/client/v4/zones/$CLOUDFLARE_ZONE_ID/dns_records 
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
   -d '{
     "type": "A",
-    "name": "*.tun.aresa.me",
+    "name": "*.tun.example.com",
     "content": "203.0.113.10",
     "ttl": 1,
     "proxied": false
@@ -288,7 +285,7 @@ go install github.com/cloudflare/cloudflare-go/cmd/flarectl@latest
 export CF_API_TOKEN='cloudflare-api-token-with-dns-write'
 ```
 
-Terraform is a better fit if you want DNS as code. Use the official Cloudflare provider and manage `tun.aresa.me` plus `*.tun.aresa.me` as `cloudflare_dns_record` resources.
+Terraform is a better fit if you want DNS as code. Use the official Cloudflare provider and manage `tun.example.com` plus `*.tun.example.com` as `cloudflare_dns_record` resources.
 
 ## Command Reference
 
@@ -314,12 +311,12 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :8080
 ### `gatelet`
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --token-id current
+gatelet demo http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --token-id current
 ```
 
 | Flag | Required | Description |
 |---|---|---|
-| positional name | Yes | Tunnel name, for example `alex` |
+| positional name | Yes | Tunnel name, for example `demo` |
 | `--name` | Alternative | Tunnel name if not using the positional form |
 | `--server` | Alternative | `gateletd` control address or WebSocket URL, for example `wss://example.com`; WebSocket URLs without a path default to `/__gatelet/control`; prefer `GATELET_SERVER` for repeated local use |
 | positional target | Yes | Local HTTP target, with or without `http://` |
@@ -352,7 +349,7 @@ GET /__gatelet/status  # JSON uptime, active tunnels, request and byte counters
 GET /metrics           # Prometheus text metrics
 ```
 
-Requests to the same paths on a tunnel subdomain, such as `https://alex.example.com/metrics`, are still forwarded to the local target.
+Requests to the same paths on a tunnel subdomain, such as `https://demo.example.com/metrics`, are still forwarded to the local target.
 
 The relay sets request timeouts and header limits on its public HTTP server. It also overwrites inbound `X-Forwarded-*` headers before forwarding to the local service so public clients cannot spoof the remote IP, original host, or original protocol.
 
