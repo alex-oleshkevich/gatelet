@@ -42,7 +42,7 @@ func TestChallengeResponseValidatesSharedTokenWithoutExposingIt(t *testing.T) {
 }
 
 func TestParseClientHelloValidatesName(t *testing.T) {
-	hello, err := ParseClientHello([]byte(`{"name":"alex"}`))
+	hello, err := ParseClientHello([]byte(`{"name":"alex","protocol_version":1,"client_version":"gatelet-test"}`))
 	if err != nil {
 		t.Fatalf("ParseClientHello returned error: %v", err)
 	}
@@ -52,5 +52,20 @@ func TestParseClientHelloValidatesName(t *testing.T) {
 
 	if _, err := ParseClientHello([]byte(`{"name":"alex.dev"}`)); err == nil {
 		t.Fatal("ParseClientHello accepted invalid name")
+	}
+}
+
+func TestParseClientHelloRequiresSupportedProtocolVersion(t *testing.T) {
+	if _, err := ParseClientHello([]byte(`{"name":"alex","client_version":"gatelet-test"}`)); err == nil {
+		t.Fatal("ParseClientHello accepted missing protocol version")
+	}
+	if _, err := ParseClientHello([]byte(`{"name":"alex","protocol_version":999,"client_version":"gatelet-test"}`)); err == nil {
+		t.Fatal("ParseClientHello accepted unsupported protocol version")
+	}
+}
+
+func TestParseClientHelloRequiresClientVersion(t *testing.T) {
+	if _, err := ParseClientHello([]byte(`{"name":"alex","protocol_version":1}`)); err == nil {
+		t.Fatal("ParseClientHello accepted missing client version")
 	}
 }

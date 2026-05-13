@@ -26,19 +26,22 @@ const maxHandshakeResponseBytes = 1024
 var localHTTPClient = newLocalHTTPClient()
 
 type Config struct {
-	Name       string
-	ServerAddr string
-	Target     string
-	Token      string
-	Domain     string
-	TUI        bool
-	ControlTLS bool
+	Name          string
+	ServerAddr    string
+	Target        string
+	Token         string
+	Domain        string
+	TUI           bool
+	ControlTLS    bool
+	ClientVersion string
 
-	Events          chan<- RequestEvent
-	PauseController *PauseController
-	PauseTimeout    time.Duration
-	RequestLog      io.Writer
-	LogFormat       LogFormat
+	Events            chan<- RequestEvent
+	PauseController   *PauseController
+	PauseTimeout      time.Duration
+	RequestLog        io.Writer
+	LogFormat         LogFormat
+	HeartbeatInterval time.Duration
+	HeartbeatTimeout  time.Duration
 
 	ControlCACertFile         string
 	ControlServerName         string
@@ -55,6 +58,9 @@ func Run(ctx context.Context, config Config) error {
 	if config.PauseTimeout == 0 {
 		config.PauseTimeout = DefaultPauseTimeout
 	}
+	if config.ClientVersion == "" {
+		config.ClientVersion = protocol.DefaultClientVersion
+	}
 
 	conn, err := dialControl(ctx, config)
 	if err != nil {
@@ -67,7 +73,9 @@ func Run(ctx context.Context, config Config) error {
 	}()
 
 	if err := json.NewEncoder(conn).Encode(protocol.ClientHello{
-		Name: config.Name,
+		Name:            config.Name,
+		ProtocolVersion: protocol.CurrentProtocolVersion,
+		ClientVersion:   config.ClientVersion,
 	}); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("send client hello: %w", err)
@@ -77,6 +85,10 @@ func Run(ctx context.Context, config Config) error {
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("read server challenge: %w", err)
+	}
+	if strings.HasPrefix(string(line), "ERR ") {
+		_ = conn.Close()
+		return fmt.Errorf("%s", strings.TrimSpace(string(line)))
 	}
 	challenge, err := protocol.ParseServerChallenge(line)
 	if err != nil {
@@ -101,7 +113,7 @@ func Run(ctx context.Context, config Config) error {
 		return fmt.Errorf("authentication failed")
 	}
 
-	session, err := yamux.Client(conn, nil)
+	session, err := yamux.Client(conn, yamuxConfig(config.HeartbeatInterval, config.HeartbeatTimeout))
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("start tunnel session: %w", err)
@@ -171,6 +183,17 @@ func controlTLSConfig(config Config) (*tls.Config, error) {
 		ServerName:         serverName,
 		InsecureSkipVerify: config.ControlInsecureSkipVerify,
 	}, nil
+}
+
+func yamuxConfig(heartbeatInterval, heartbeatTimeout time.Duration) *yamux.Config {
+	config := yamux.DefaultConfig()
+	if heartbeatInterval > 0 {
+		config.KeepAliveInterval = heartbeatInterval
+	}
+	if heartbeatTimeout > 0 {
+		config.ConnectionWriteTimeout = heartbeatTimeout
+	}
+	return config
 }
 
 func handleStream(ctx context.Context, stream net.Conn, config Config) {

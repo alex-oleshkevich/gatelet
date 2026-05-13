@@ -26,16 +26,20 @@ const (
 var handshakeTimeout = 10 * time.Second
 
 type Config struct {
-	Domain      string
-	Token       string
-	ControlAddr string
-	Logger      *slog.Logger
+	Domain            string
+	Token             string
+	ControlAddr       string
+	Logger            *slog.Logger
+	HeartbeatInterval time.Duration
+	HeartbeatTimeout  time.Duration
 }
 
 type Server struct {
-	domain string
-	token  string
-	logger *slog.Logger
+	domain            string
+	token             string
+	logger            *slog.Logger
+	heartbeatInterval time.Duration
+	heartbeatTimeout  time.Duration
 
 	mu       sync.RWMutex
 	sessions map[string]*yamux.Session
@@ -47,10 +51,12 @@ func New(config Config) *Server {
 		logger = slog.Default()
 	}
 	return &Server{
-		domain:   normalizeDNSName(config.Domain),
-		token:    config.Token,
-		logger:   logger,
-		sessions: make(map[string]*yamux.Session),
+		domain:            normalizeDNSName(config.Domain),
+		token:             config.Token,
+		logger:            logger,
+		heartbeatInterval: config.HeartbeatInterval,
+		heartbeatTimeout:  config.HeartbeatTimeout,
+		sessions:          make(map[string]*yamux.Session),
 	}
 }
 
@@ -154,11 +160,16 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	hello, err := protocol.ParseClientHello(line)
 	if err != nil {
 		s.logger.Warn("parse client hello failed", "remote", remote, "error", err)
-		_, _ = conn.Write([]byte(protocol.HandshakeErr))
+		var unsupported protocol.UnsupportedProtocolError
+		if errors.As(err, &unsupported) {
+			_, _ = conn.Write([]byte(protocol.HandshakeUnsupportedProtocol))
+		} else {
+			_, _ = conn.Write([]byte(protocol.HandshakeErr))
+		}
 		_ = conn.Close()
 		return
 	}
-	s.logger.Info("client hello received", "name", hello.Name, "remote", remote)
+	s.logger.Info("client hello received", "name", hello.Name, "remote", remote, "protocol_version", hello.ProtocolVersion, "client_version", hello.ClientVersion)
 
 	nonce, err := protocol.NewNonce()
 	if err != nil {
@@ -195,7 +206,7 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		s.logger.Warn("clear control handshake deadline failed", "name", hello.Name, "remote", remote, "error", err)
 	}
 
-	session, err := yamux.Server(conn, nil)
+	session, err := yamux.Server(conn, yamuxConfig(s.heartbeatInterval, s.heartbeatTimeout))
 	if err != nil {
 		s.logger.Error("start tunnel session failed", "name", hello.Name, "remote", remote, "error", err)
 		_ = conn.Close()
@@ -267,6 +278,17 @@ func normalizeDNSName(name string) string {
 	name = strings.TrimPrefix(name, ".")
 	name = strings.TrimSuffix(name, ".")
 	return name
+}
+
+func yamuxConfig(heartbeatInterval, heartbeatTimeout time.Duration) *yamux.Config {
+	config := yamux.DefaultConfig()
+	if heartbeatInterval > 0 {
+		config.KeepAliveInterval = heartbeatInterval
+	}
+	if heartbeatTimeout > 0 {
+		config.ConnectionWriteTimeout = heartbeatTimeout
+	}
+	return config
 }
 
 func copyHeader(dst, src http.Header) {

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"gatelet/internal/client"
+	"gatelet/internal/protocol"
 )
 
 func TestServerRoutesSubdomainThroughClientTunnel(t *testing.T) {
@@ -186,6 +188,36 @@ func TestClientReportsAuthenticationFailure(t *testing.T) {
 	}
 }
 
+func TestServerRejectsUnsupportedProtocolVersion(t *testing.T) {
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		relay.handleControlConn(serverConn)
+		close(done)
+	}()
+
+	_, _ = clientConn.Write([]byte(`{"name":"alex","protocol_version":999,"client_version":"old-client"}` + "\n"))
+	line, err := protocol.ReadLine(clientConn, 256)
+	if err != nil {
+		t.Fatalf("ReadLine returned error: %v", err)
+	}
+	if string(line) != protocol.HandshakeUnsupportedProtocol {
+		t.Fatalf("handshake response = %q, want %q", string(line), protocol.HandshakeUnsupportedProtocol)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server did not close unsupported protocol connection")
+	}
+}
+
 func TestControlTLSTrustedCertificateRoutesTunnel(t *testing.T) {
 	cert, _ := newTestControlCertificate(t)
 	caFile := writeControlCAFile(t, cert)
@@ -341,6 +373,67 @@ func TestControlHandshakeDeadlineClosesIdleConnection(t *testing.T) {
 	}
 }
 
+func TestControlHeartbeatTimeoutRemovesDeadTunnel(t *testing.T) {
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain:            "example.test",
+		Token:             "dev-token",
+		HeartbeatInterval: 20 * time.Millisecond,
+		HeartbeatTimeout:  20 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	conn := authenticateRawControl(t, control.Addr().String(), "alex", "dev-token")
+	defer conn.Close()
+	waitForTunnel(t, relay, "alex")
+	waitForNoTunnel(t, relay, "alex")
+}
+
+func TestControlHeartbeatKeepsResponsiveTunnel(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer local.Close()
+
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain:            "example.test",
+		Token:             "dev-token",
+		HeartbeatInterval: 20 * time.Millisecond,
+		HeartbeatTimeout:  20 * time.Millisecond,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:              "alex",
+			ServerAddr:        control.Addr().String(),
+			Target:            local.URL,
+			Token:             "dev-token",
+			HeartbeatInterval: 20 * time.Millisecond,
+			HeartbeatTimeout:  20 * time.Millisecond,
+		})
+	}()
+
+	waitForTunnel(t, relay, "alex")
+	time.Sleep(120 * time.Millisecond)
+	if !relay.HasTunnel("alex") {
+		t.Fatal("responsive tunnel was removed despite heartbeat replies")
+	}
+}
+
 func listenLocal(t *testing.T) net.Listener {
 	t.Helper()
 
@@ -397,6 +490,65 @@ func waitForTunnel(t *testing.T, relay *Server, name string) {
 	}
 
 	t.Fatalf("timed out waiting for tunnel %q", name)
+}
+
+func waitForNoTunnel(t *testing.T, relay *Server, name string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !relay.HasTunnel(name) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for tunnel %q to disappear", name)
+}
+
+func authenticateRawControl(t *testing.T, addr, name, token string) net.Conn {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	hello := protocol.ClientHello{
+		Name:            name,
+		ProtocolVersion: protocol.CurrentProtocolVersion,
+		ClientVersion:   "raw-test",
+	}
+	if err := json.NewEncoder(conn).Encode(hello); err != nil {
+		conn.Close()
+		t.Fatalf("Encode hello returned error: %v", err)
+	}
+	line, err := protocol.ReadLine(conn, 1024)
+	if err != nil {
+		conn.Close()
+		t.Fatalf("ReadLine challenge returned error: %v", err)
+	}
+	challenge, err := protocol.ParseServerChallenge(line)
+	if err != nil {
+		conn.Close()
+		t.Fatalf("ParseServerChallenge returned error: %v", err)
+	}
+	response := protocol.ClientChallengeResponse{
+		Response: protocol.ChallengeResponse(name, challenge.Nonce, token),
+	}
+	if err := json.NewEncoder(conn).Encode(response); err != nil {
+		conn.Close()
+		t.Fatalf("Encode response returned error: %v", err)
+	}
+	line, err = protocol.ReadLine(conn, 1024)
+	if err != nil {
+		conn.Close()
+		t.Fatalf("ReadLine auth returned error: %v", err)
+	}
+	if string(line) != protocol.HandshakeOK {
+		conn.Close()
+		t.Fatalf("auth response = %q, want %q", string(line), protocol.HandshakeOK)
+	}
+	return conn
 }
 
 func newTestControlCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {

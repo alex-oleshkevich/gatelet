@@ -12,12 +12,26 @@ import (
 )
 
 const (
-	HandshakeOK  = "OK\n"
-	HandshakeErr = "ERR authentication failed\n"
+	CurrentProtocolVersion = 1
+	DefaultClientVersion   = "gatelet-dev"
+
+	HandshakeOK                  = "OK\n"
+	HandshakeErr                 = "ERR authentication failed\n"
+	HandshakeUnsupportedProtocol = "ERR unsupported protocol version\n"
 )
 
 type ClientHello struct {
-	Name string `json:"name"`
+	Name            string `json:"name"`
+	ProtocolVersion int    `json:"protocol_version"`
+	ClientVersion   string `json:"client_version"`
+}
+
+type UnsupportedProtocolError struct {
+	Version int
+}
+
+func (e UnsupportedProtocolError) Error() string {
+	return fmt.Sprintf("unsupported protocol version %d", e.Version)
 }
 
 type ServerChallenge struct {
@@ -43,6 +57,12 @@ func ParseClientHello(data []byte) (ClientHello, error) {
 	}
 	if err := ValidateName(hello.Name); err != nil {
 		return ClientHello{}, err
+	}
+	if hello.ProtocolVersion != CurrentProtocolVersion {
+		return ClientHello{}, UnsupportedProtocolError{Version: hello.ProtocolVersion}
+	}
+	if hello.ClientVersion == "" {
+		return ClientHello{}, errors.New("client version is required")
 	}
 
 	return hello, nil

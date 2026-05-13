@@ -17,7 +17,7 @@ flowchart LR
     Local --> Client --> Relay --> Browser
 ```
 
-`gatelet` opens an outbound control connection to `gateletd`, authenticates with a shared token using a challenge-response handshake, and registers a tunnel name such as `alex`. The `gatelet` CLI uses TLS for this control connection by default. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
+`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a shared token using a challenge-response handshake, and registers a tunnel name such as `alex`. The `gatelet` CLI uses TLS for this control connection by default. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
 
 ## Current Scope
 
@@ -266,9 +266,9 @@ gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token 
 
 Tunnel names must be lowercase DNS labels: letters, numbers, and interior hyphens only.
 
-In TUI mode, `gatelet` shows the public URL, connection status, request history, selected request details, headers, timing, status, errors, and capped text body previews. Press `p` to pause or resume new requests; paused requests wait until resume or timeout.
+In TUI mode, `gatelet` shows the public URL, connection status, request history, selected request details, headers, timing, status, errors, and capped text body previews. Press `p` to pause or resume new requests; paused requests wait until resume or timeout. In request detail view, press `r` to replay the selected request to the local target, `y` to copy it as a curl command, and `e` to save the curl command under the Gatelet capture directory.
 
-`gateletd` writes structured text logs for startup, control connections, authentication, tunnel registration, incoming requests, tunnel misses, forwards, statuses, durations, byte counts, and forwarding errors.
+`gateletd` writes structured text logs for startup, control connections, protocol/client versions, authentication, tunnel registration, incoming requests, tunnel misses, forwards, statuses, durations, byte counts, and forwarding errors.
 
 The relay sets request timeouts and header limits on its public HTTP server. It also overwrites inbound `X-Forwarded-*` headers before forwarding to the local service so public clients cannot spoof the remote IP, original host, or original protocol.
 
@@ -281,6 +281,8 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 - Hostnames are matched case-insensitively and may include a trailing dot.
 - The forwarded request preserves the original public `Host` header.
 - The shared token is not sent directly during tunnel registration; the client proves token knowledge with an HMAC challenge response after the control transport is established.
+- The control protocol currently supports protocol version `1`. Unsupported clients receive `ERR unsupported protocol version`.
+- The yamux control session uses periodic ping heartbeats. Dead or unresponsive tunnels are closed and removed from the relay session table.
 
 ## Development
 

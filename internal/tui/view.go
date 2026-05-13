@@ -112,12 +112,12 @@ func (m model) statusLabel() string {
 func (m model) statusHelp() string {
 	if m.width < 72 {
 		if m.mode == viewDetail {
-			return "Esc back | j/k scroll | c copy | q"
+			return "Esc back | r replay | y curl | q"
 		}
 		return "Enter open | / filter | p pause | q"
 	}
 	if m.mode == viewDetail {
-		return "F format/plain | Esc back | j/k scroll | PgUp/PgDn page | c copy url | p pause | q quit"
+		return "r replay | y copy curl | e save curl | F format/plain | Esc back | j/k scroll | q quit"
 	}
 	return "Enter details | j/k move | / filter | x clear | c copy url | p pause | q quit"
 }

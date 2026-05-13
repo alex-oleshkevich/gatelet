@@ -18,6 +18,10 @@ const (
 type eventMsg client.RequestEvent
 type clientDoneMsg struct{ err error }
 type tickMsg time.Time
+type replayDoneMsg struct {
+	event client.RequestEvent
+	err   error
+}
 
 func Run(ctx context.Context, config client.Config) error {
 	runCtx, cancel := context.WithCancel(ctx)
@@ -35,15 +39,17 @@ func Run(ctx context.Context, config client.Config) error {
 	}()
 
 	m := model{
-		ctx:       runCtx,
-		cancel:    cancel,
-		events:    events,
-		clientErr: errs,
-		pause:     pause,
-		url:       client.PublicURL(config.Name, config.Domain, config.ServerAddr),
-		status:    "connecting",
-		now:       time.Now(),
-		index:     make(map[uint64]int),
+		ctx:        runCtx,
+		cancel:     cancel,
+		events:     events,
+		clientErr:  errs,
+		pause:      pause,
+		url:        client.PublicURL(config.Name, config.Domain, config.ServerAddr),
+		target:     config.Target,
+		status:     "connecting",
+		now:        time.Now(),
+		index:      make(map[uint64]int),
+		captureDir: defaultCaptureDir(),
 	}
 
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()

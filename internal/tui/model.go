@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"gatelet/internal/client"
@@ -47,6 +46,8 @@ type model struct {
 	pause     *client.PauseController
 
 	url          string
+	target       string
+	captureDir   string
 	status       string
 	message      string
 	paused       bool
@@ -62,6 +63,9 @@ type model struct {
 
 	requests []requestItem
 	index    map[uint64]int
+
+	copyText func(string) error
+	replay   func(context.Context, string, client.RequestEvent) (client.RequestEvent, error)
 }
 
 func (m model) Init() tea.Cmd {
@@ -92,6 +96,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "stopped"
+		return m, nil
+	case replayDoneMsg:
+		if msg.event.ID != 0 {
+			m.applyEvent(msg.event)
+			m.clampSelection()
+		}
+		if msg.err != nil {
+			m.message = "replay failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.message = fmt.Sprintf("replay %d %s", msg.event.StatusCode, msg.event.RequestURI)
 		return m, nil
 	case tea.KeyMsg:
 		return m.updateKey(msg)
@@ -129,10 +144,22 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.message = ""
 		}
 	case "c":
-		if err := clipboard.WriteAll(m.url); err != nil {
+		if err := m.copyTextFunc()(m.url); err != nil {
 			m.message = "copy failed: " + err.Error()
 		} else {
 			m.message = "copied " + m.url
+		}
+	case "y":
+		if m.mode == viewDetail {
+			m.copySelectedCurl()
+		}
+	case "e":
+		if m.mode == viewDetail {
+			m.exportSelectedCurl()
+		}
+	case "r":
+		if m.mode == viewDetail {
+			return m.replaySelectedRequest()
 		}
 	case "x":
 		if m.mode == viewList {

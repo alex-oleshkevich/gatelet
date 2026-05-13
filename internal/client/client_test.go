@@ -52,8 +52,45 @@ func TestRunDoesNotSendTokenInInitialHandshake(t *testing.T) {
 		if strings.Contains(line, "secret-token") {
 			t.Fatalf("initial handshake leaked token: %q", line)
 		}
+		if !strings.Contains(line, `"protocol_version":1`) {
+			t.Fatalf("initial handshake missing protocol version: %q", line)
+		}
+		if !strings.Contains(line, `"client_version":`) {
+			t.Fatalf("initial handshake missing client version: %q", line)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for initial handshake")
+	}
+}
+
+func TestRunReportsUnsupportedProtocolResponse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = protocol.ReadLine(conn, 1024)
+		_, _ = conn.Write([]byte(protocol.HandshakeUnsupportedProtocol))
+	}()
+
+	err = Run(context.Background(), Config{
+		Name:       "alex",
+		ServerAddr: ln.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		Token:      "secret-token",
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "unsupported protocol version") {
+		t.Fatalf("error = %q, want unsupported protocol version", err.Error())
 	}
 }
 

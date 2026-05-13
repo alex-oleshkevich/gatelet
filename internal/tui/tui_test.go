@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"gatelet/internal/client"
@@ -247,10 +251,129 @@ func TestDetailViewTogglesPlainJSONBody(t *testing.T) {
 	}
 }
 
+func TestDetailViewCopiesSelectedRequestAsCurl(t *testing.T) {
+	var copied string
+	m := detailActionModel()
+	m.copyText = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd != nil {
+		t.Fatal("copy returned command, want immediate update")
+	}
+	got := updated.(model)
+	if !strings.Contains(copied, "curl -X POST 'https://alex.tun.aresa.me/api/users'") {
+		t.Fatalf("copied text = %q, want curl command", copied)
+	}
+	if !strings.Contains(copied, "--data-binary '{\"name\":\"Alex\"}'") {
+		t.Fatalf("copied text missing body: %q", copied)
+	}
+	if !strings.Contains(got.message, "copied curl") {
+		t.Fatalf("message = %q, want copied curl", got.message)
+	}
+}
+
+func TestDetailViewExportsSelectedRequestAsCurlFile(t *testing.T) {
+	m := detailActionModel()
+	m.captureDir = t.TempDir()
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	if cmd != nil {
+		t.Fatal("export returned command, want immediate update")
+	}
+	got := updated.(model)
+	if !strings.Contains(got.message, "saved curl") {
+		t.Fatalf("message = %q, want saved curl", got.message)
+	}
+
+	data, err := os.ReadFile(filepath.Join(m.captureDir, "000001-post-api-users.curl"))
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !strings.Contains(string(data), "curl -X POST 'https://alex.tun.aresa.me/api/users'") {
+		t.Fatalf("saved curl file = %q", string(data))
+	}
+}
+
+func TestDetailViewReplaysSelectedRequest(t *testing.T) {
+	m := detailActionModel()
+	m.target = "http://127.0.0.1:3000"
+	m.replay = func(ctx context.Context, target string, event client.RequestEvent) (client.RequestEvent, error) {
+		if target != "http://127.0.0.1:3000" {
+			t.Fatalf("target = %q, want local target", target)
+		}
+		if event.Method != "POST" || event.RequestURI != "/api/users" {
+			t.Fatalf("event = %s %s, want POST /api/users", event.Method, event.RequestURI)
+		}
+		event.ID = 99
+		event.Type = client.EventRequestCompleted
+		event.StatusCode = 202
+		event.RemoteAddr = "local replay"
+		event.Time = m.now
+		return event, nil
+	}
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	got := updated.(model)
+	if !strings.Contains(got.message, "replaying") {
+		t.Fatalf("message = %q, want replaying", got.message)
+	}
+	if cmd == nil {
+		t.Fatal("replay returned nil command")
+	}
+
+	msg := cmd()
+	updated, _ = got.Update(msg)
+	got = updated.(model)
+	if len(got.requests) != 2 {
+		t.Fatalf("requests = %d, want replay result appended", len(got.requests))
+	}
+	result := got.requests[0]
+	if result.ID != 99 || result.StatusCode != 202 || result.RemoteAddr != "local replay" {
+		t.Fatalf("replay result = %+v", result)
+	}
+	if !strings.Contains(got.message, "replay 202") {
+		t.Fatalf("message = %q, want replay status", got.message)
+	}
+}
+
 func TestColorizeJSONKeepsPlainText(t *testing.T) {
 	got := stripANSI(colorizeJSON(`{"ok":true,"n":12,"name":"Alex"}`))
 	if got != `{"ok":true,"n":12,"name":"Alex"}` {
 		t.Fatalf("colorizeJSON changed text = %q", got)
+	}
+}
+
+func detailActionModel() model {
+	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
+	return model{
+		ctx:    context.Background(),
+		url:    "https://alex.tun.aresa.me",
+		status: "online",
+		mode:   viewDetail,
+		width:  120,
+		height: 24,
+		now:    now,
+		index:  map[uint64]int{1: 0},
+		requests: []requestItem{{
+			ID:         1,
+			Method:     "POST",
+			RequestURI: "/api/users",
+			Host:       "alex.tun.aresa.me",
+			StatusCode: 201,
+			State:      client.EventRequestCompleted,
+			StartedAt:  now,
+			RequestHeader: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			RequestPreview: client.BodyPreview{
+				Size:        int64(len(`{"name":"Alex"}`)),
+				Text:        `{"name":"Alex"}`,
+				ContentType: "application/json",
+			},
+		}},
 	}
 }
 
