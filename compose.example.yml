@@ -1,0 +1,18 @@
+services:
+  gateletd:
+    build:
+      context: .
+    image: gatelet:local
+    restart: unless-stopped
+    command:
+      - --domain
+      - ${GATELET_DOMAIN:-tun.example.com}
+      - --http
+      - :8080
+      - --control
+      - :4443
+      - --token
+      - ${GATELET_TOKEN:?set GATELET_TOKEN}
+    ports:
+      - "${GATELET_HTTP_PORT:-8080}:8080"
+      - "${GATELET_CONTROL_PORT:-4443}:4443"
