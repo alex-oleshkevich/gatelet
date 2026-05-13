@@ -11,8 +11,8 @@ services:
       - :8080
       - --control
       - :4443
-      - --token
-      - ${GATELET_TOKEN:?set GATELET_TOKEN}
+    environment:
+      GATELET_TOKEN: ${GATELET_TOKEN:?set GATELET_TOKEN}
     ports:
       - "${GATELET_HTTP_PORT:-8080}:8080"
       - "${GATELET_CONTROL_PORT:-4443}:4443"

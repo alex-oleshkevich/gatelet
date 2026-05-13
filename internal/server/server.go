@@ -18,7 +18,12 @@ import (
 	"gatelet/internal/protocol"
 )
 
-const maxHandshakeBytes = 4096
+const (
+	maxHandshakeBytes = 4096
+	streamTimeout     = 5 * time.Minute
+)
+
+var handshakeTimeout = 10 * time.Second
 
 type Config struct {
 	Domain      string
@@ -101,6 +106,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stream.Close()
+	if err := stream.SetDeadline(time.Now().Add(streamTimeout)); err != nil {
+		s.logger.Warn("set tunnel stream deadline failed", "name", name, "method", r.Method, "uri", r.URL.RequestURI(), "error", err)
+	}
 
 	s.logger.Info("forward started", "name", name, "method", r.Method, "uri", r.URL.RequestURI())
 	addForwardedHeaders(r)
@@ -131,6 +139,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleControlConn(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	defer s.logger.Info("control connection closed", "remote", remote)
+
+	if err := conn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		s.logger.Warn("set control handshake deadline failed", "remote", remote, "error", err)
+	}
 
 	line, err := protocol.ReadLine(conn, maxHandshakeBytes)
 	if err != nil {
@@ -178,6 +190,9 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		s.logger.Warn("send auth ok failed", "name", hello.Name, "remote", remote, "error", err)
 		_ = conn.Close()
 		return
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		s.logger.Warn("clear control handshake deadline failed", "name", hello.Name, "remote", remote, "error", err)
 	}
 
 	session, err := yamux.Server(conn, nil)
@@ -264,16 +279,12 @@ func copyHeader(dst, src http.Header) {
 
 func addForwardedHeaders(r *http.Request) {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		if prior := r.Header.Get("X-Forwarded-For"); prior != "" {
-			r.Header.Set("X-Forwarded-For", prior+", "+host)
-		} else {
-			r.Header.Set("X-Forwarded-For", host)
-		}
+		r.Header.Set("X-Forwarded-For", host)
 	}
-	if r.Header.Get("X-Forwarded-Host") == "" {
-		r.Header.Set("X-Forwarded-Host", r.Host)
+	r.Header.Set("X-Forwarded-Host", r.Host)
+	proto := "http"
+	if r.TLS != nil {
+		proto = "https"
 	}
-	if r.Header.Get("X-Forwarded-Proto") == "" {
-		r.Header.Set("X-Forwarded-Proto", "http")
-	}
+	r.Header.Set("X-Forwarded-Proto", proto)
 }

@@ -3,12 +3,15 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -29,11 +32,18 @@ type Config struct {
 	Token      string
 	Domain     string
 	TUI        bool
+	ControlTLS bool
 
 	Events          chan<- RequestEvent
 	PauseController *PauseController
 	PauseTimeout    time.Duration
 	RequestLog      io.Writer
+	LogFormat       LogFormat
+
+	ControlCACertFile         string
+	ControlServerName         string
+	ControlInsecureSkipVerify bool
+	ControlRootCAs            *x509.CertPool
 }
 
 var requestID uint64
@@ -46,7 +56,7 @@ func Run(ctx context.Context, config Config) error {
 		config.PauseTimeout = DefaultPauseTimeout
 	}
 
-	conn, err := net.Dial("tcp", config.ServerAddr)
+	conn, err := dialControl(ctx, config)
 	if err != nil {
 		return fmt.Errorf("connect server: %w", err)
 	}
@@ -111,6 +121,58 @@ func Run(ctx context.Context, config Config) error {
 	}
 }
 
+func dialControl(ctx context.Context, config Config) (net.Conn, error) {
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "tcp", config.ServerAddr)
+	if err != nil {
+		return nil, err
+	}
+	if !config.ControlTLS {
+		return conn, nil
+	}
+
+	tlsConfig, err := controlTLSConfig(config)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("TLS handshake: %w", err)
+	}
+	return tlsConn, nil
+}
+
+func controlTLSConfig(config Config) (*tls.Config, error) {
+	rootCAs := config.ControlRootCAs
+	if config.ControlCACertFile != "" {
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			pool = x509.NewCertPool()
+		}
+		data, err := os.ReadFile(config.ControlCACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("read control CA file: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(data) {
+			return nil, fmt.Errorf("control CA file has no certificates")
+		}
+		rootCAs = pool
+	}
+
+	serverName := config.ControlServerName
+	if serverName == "" {
+		serverName = hostWithoutPort(config.ServerAddr)
+	}
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		RootCAs:            rootCAs,
+		ServerName:         serverName,
+		InsecureSkipVerify: config.ControlInsecureSkipVerify,
+	}, nil
+}
+
 func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	defer stream.Close()
 
@@ -126,9 +188,6 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 
 	requestURI := req.URL.RequestURI()
 	remoteAddr := requestRemoteAddr(req)
-	if config.RequestLog != nil {
-		_, _ = fmt.Fprintln(config.RequestLog, RequestLine(req.Method, requestURI))
-	}
 
 	reqBody, reqPreview := wrapBodyForPreview(req.Header, req.Body)
 	req.Body = reqBody
@@ -175,7 +234,11 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		if err != nil {
 			writeError(stream, http.StatusGatewayTimeout, "request paused too long")
 			requestPreview := reqPreview.Preview()
-			emit(config.Events, RequestEvent{
+			requestSize := requestPreview.Size
+			if requestSize == 0 && req.ContentLength > 0 {
+				requestSize = req.ContentLength
+			}
+			event := RequestEvent{
 				ID:             id,
 				Type:           EventRequestFailed,
 				Time:           time.Now(),
@@ -184,10 +247,12 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 				Host:           req.Host,
 				RemoteAddr:     remoteAddr,
 				RequestPreview: requestPreview,
-				RequestSize:    requestPreview.Size,
+				RequestSize:    requestSize,
 				Duration:       time.Since(started),
 				Error:          err.Error(),
-			})
+			}
+			logRequest(config.RequestLog, config.LogFormat, event)
+			emit(config.Events, event)
 			return
 		}
 	}
@@ -195,7 +260,9 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	targetURL, err := targetRequestURL(config.Target, requestURI)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local target")
-		emit(config.Events, failedEvent(id, req, reqPreview, nil, started, err))
+		event := failedEvent(id, req, reqPreview, nil, started, err)
+		logRequest(config.RequestLog, config.LogFormat, event)
+		emit(config.Events, event)
 		return
 	}
 
@@ -212,7 +279,9 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	outReq, err := http.NewRequest(req.Method, targetURL, req.Body)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local request")
-		emit(config.Events, failedEvent(id, req, reqPreview, nil, started, err))
+		event := failedEvent(id, req, reqPreview, nil, started, err)
+		logRequest(config.RequestLog, config.LogFormat, event)
+		emit(config.Events, event)
 		return
 	}
 	copyHeader(outReq.Header, req.Header)
@@ -221,7 +290,9 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	resp, err := localHTTPClient.Do(outReq)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "local target unavailable")
-		emit(config.Events, failedEvent(id, req, reqPreview, nil, started, err))
+		event := failedEvent(id, req, reqPreview, nil, started, err)
+		logRequest(config.RequestLog, config.LogFormat, event)
+		emit(config.Events, event)
 		return
 	}
 	defer resp.Body.Close()
@@ -230,12 +301,14 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	resp.Body = respBody
 	if err := resp.Write(stream); err != nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		emit(config.Events, failedEvent(id, req, reqPreview, respPreview, started, err))
+		event := failedEvent(id, req, reqPreview, respPreview, started, err)
+		logRequest(config.RequestLog, config.LogFormat, event)
+		emit(config.Events, event)
 		return
 	}
 	requestPreview := reqPreview.Preview()
 	responsePreview := respPreview.Preview()
-	emit(config.Events, RequestEvent{
+	event := RequestEvent{
 		ID:              id,
 		Type:            EventRequestCompleted,
 		Time:            time.Now(),
@@ -251,7 +324,9 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		RequestSize:     requestPreview.Size,
 		ResponseSize:    responsePreview.Size,
 		Duration:        time.Since(started),
-	})
+	}
+	logRequest(config.RequestLog, config.LogFormat, event)
+	emit(config.Events, event)
 }
 
 func writeError(w io.Writer, status int, message string) {
@@ -292,8 +367,23 @@ func emit(events chan<- RequestEvent, event RequestEvent) {
 	}
 }
 
+func logRequest(w io.Writer, format LogFormat, event RequestEvent) {
+	if w == nil {
+		return
+	}
+	line, err := RequestLogLine(event, format)
+	if err != nil {
+		line = LogLine(event)
+	}
+	_, _ = fmt.Fprintln(w, line)
+}
+
 func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, respPreview *bodyPreviewCapture, started time.Time, err error) RequestEvent {
 	requestPreview := reqPreview.Preview()
+	requestSize := requestPreview.Size
+	if requestSize == 0 && req.ContentLength > 0 {
+		requestSize = req.ContentLength
+	}
 	event := RequestEvent{
 		ID:             id,
 		Type:           EventRequestFailed,
@@ -304,7 +394,7 @@ func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, r
 		RemoteAddr:     requestRemoteAddr(req),
 		RequestHeader:  cloneHeader(req.Header),
 		RequestPreview: requestPreview,
-		RequestSize:    requestPreview.Size,
+		RequestSize:    requestSize,
 		Duration:       time.Since(started),
 		Error:          err.Error(),
 	}

@@ -193,25 +193,7 @@ func isOld(now, started time.Time) bool {
 }
 
 func formatBytes(size int64) string {
-	if size < 0 {
-		size = 0
-	}
-	const unit = 1024
-	if size < unit {
-		return fmt.Sprintf("%dB", size)
-	}
-	value := float64(size)
-	units := []string{"kb", "mb", "gb"}
-	for _, suffix := range units {
-		value /= unit
-		if value < unit {
-			if value >= 10 {
-				return fmt.Sprintf("%.0f%s", value, suffix)
-			}
-			return fmt.Sprintf("%.1f%s", value, suffix)
-		}
-	}
-	return fmt.Sprintf("%.1ftb", value/unit)
+	return client.FormatBytes(size)
 }
 
 func previewLimitForDisplay() int64 {

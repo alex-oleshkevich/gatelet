@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,6 +113,91 @@ func TestPublicURLDefaultsDomainFromServerAddress(t *testing.T) {
 	}
 }
 
+func TestRequestLogLineFormatsText(t *testing.T) {
+	got, err := RequestLogLine(RequestEvent{
+		Method:      http.MethodPost,
+		RequestURI:  "/api/items",
+		StatusCode:  http.StatusCreated,
+		RequestSize: 1536,
+		RemoteAddr:  "203.0.113.44:54812",
+		Duration:    25 * time.Millisecond,
+	}, LogFormatText)
+	if err != nil {
+		t.Fatalf("RequestLogLine returned error: %v", err)
+	}
+	want := "POST /api/items 201 1.5kb 203.0.113.44"
+	if got != want {
+		t.Fatalf("RequestLogLine = %q, want %q", got, want)
+	}
+}
+
+func TestRequestLogLineFormatsJSON(t *testing.T) {
+	got, err := RequestLogLine(RequestEvent{
+		Method:      http.MethodGet,
+		RequestURI:  "/api/items?limit=1",
+		StatusCode:  http.StatusOK,
+		RequestSize: 42,
+		RemoteAddr:  "203.0.113.44:54812",
+		Duration:    25 * time.Millisecond,
+	}, LogFormatJSON)
+	if err != nil {
+		t.Fatalf("RequestLogLine returned error: %v", err)
+	}
+
+	var record struct {
+		Type        string  `json:"type"`
+		Method      string  `json:"method"`
+		Path        string  `json:"path"`
+		Status      int     `json:"status"`
+		RequestSize int64   `json:"request_size"`
+		RemoteIP    string  `json:"remote_ip"`
+		DurationMS  float64 `json:"duration_ms"`
+		Error       string  `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(got), &record); err != nil {
+		t.Fatalf("request log is not JSON: %v", err)
+	}
+	if record.Type != "request" || record.Method != "GET" || record.Path != "/api/items?limit=1" {
+		t.Fatalf("unexpected JSON record: %+v", record)
+	}
+	if record.Status != http.StatusOK || record.RequestSize != 42 || record.RemoteIP != "203.0.113.44" {
+		t.Fatalf("unexpected JSON metrics: %+v", record)
+	}
+	if record.DurationMS != 25 {
+		t.Fatalf("DurationMS = %v, want 25", record.DurationMS)
+	}
+	if record.Error != "" {
+		t.Fatalf("Error = %q, want empty", record.Error)
+	}
+}
+
+func TestRequestLogLineFormatsJSONError(t *testing.T) {
+	got, err := RequestLogLine(RequestEvent{
+		Method:      http.MethodPost,
+		RequestURI:  "/bad",
+		RequestSize: 3,
+		Duration:    time.Millisecond,
+		Error:       "local target unavailable",
+	}, LogFormatJSONL)
+	if err != nil {
+		t.Fatalf("RequestLogLine returned error: %v", err)
+	}
+
+	var record struct {
+		Status int    `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(got), &record); err != nil {
+		t.Fatalf("request log is not JSON: %v", err)
+	}
+	if record.Status != 0 {
+		t.Fatalf("Status = %d, want 0", record.Status)
+	}
+	if record.Error != "local target unavailable" {
+		t.Fatalf("Error = %q, want local target unavailable", record.Error)
+	}
+}
+
 func TestRequestRemoteAddrPrefersForwardedFor(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
@@ -123,7 +210,7 @@ func TestRequestRemoteAddrPrefersForwardedFor(t *testing.T) {
 	}
 }
 
-func TestHandleStreamLogsIncomingRequestLine(t *testing.T) {
+func TestHandleStreamLogsCompletedRequestSummary(t *testing.T) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -132,13 +219,13 @@ func TestHandleStreamLogsIncomingRequestLine(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
 
-	var requestLog bytes.Buffer
+	requestLog := newRequestLogRecorder()
 	go handleStream(context.Background(), serverConn, Config{
 		Target:     local.URL,
-		RequestLog: &requestLog,
+		RequestLog: requestLog,
 	})
 
-	_, _ = fmt.Fprint(clientConn, "GET /hello?name=alex HTTP/1.1\r\nHost: alex.example.test\r\n\r\n")
+	_, _ = fmt.Fprint(clientConn, "GET /hello?name=alex HTTP/1.1\r\nHost: alex.example.test\r\nX-Forwarded-For: 203.0.113.44\r\n\r\n")
 	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
 	if err != nil {
 		t.Fatalf("ReadResponse returned error: %v", err)
@@ -146,10 +233,28 @@ func TestHandleStreamLogsIncomingRequestLine(t *testing.T) {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	want := "GET /hello?name=alex\n"
-	if requestLog.String() != want {
-		t.Fatalf("request log = %q, want %q", requestLog.String(), want)
+	requestLog.assert(t, "GET /hello?name=alex 200 0B 203.0.113.44\n")
+}
+
+func TestHandleStreamLogsFailedRequestSummary(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	requestLog := newRequestLogRecorder()
+	go handleStream(context.Background(), serverConn, Config{
+		Target:     "ftp://127.0.0.1:3000",
+		RequestLog: requestLog,
+	})
+
+	_, _ = fmt.Fprint(clientConn, "POST /bad HTTP/1.1\r\nHost: alex.example.test\r\nContent-Length: 3\r\n\r\nabc")
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse returned error: %v", err)
 	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	requestLog.assert(t, "POST /bad ERR 3B \n")
 }
 
 func TestHandleStreamHoldsRequestsWhilePaused(t *testing.T) {
@@ -188,5 +293,48 @@ func TestHandleStreamHoldsRequestsWhilePaused(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+type requestLogRecorder struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	updated chan struct{}
+}
+
+func newRequestLogRecorder() *requestLogRecorder {
+	return &requestLogRecorder{updated: make(chan struct{}, 1)}
+}
+
+func (r *requestLogRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	n, err := r.buf.Write(p)
+	r.mu.Unlock()
+	select {
+	case r.updated <- struct{}{}:
+	default:
+	}
+	return n, err
+}
+
+func (r *requestLogRecorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.buf.String()
+}
+
+func (r *requestLogRecorder) assert(t *testing.T, want string) {
+	t.Helper()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		if got := r.String(); got == want {
+			return
+		}
+		select {
+		case <-r.updated:
+		case <-timer.C:
+			t.Fatalf("request log = %q, want %q", r.String(), want)
+		}
 	}
 }

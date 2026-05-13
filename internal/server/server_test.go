@@ -3,11 +3,20 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -130,14 +139,20 @@ func TestAddForwardedHeadersAddsRemoteIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/", nil)
 	req.Host = "alex.example.test"
 	req.RemoteAddr = "203.0.113.44:54321"
+	req.Header.Set("X-Forwarded-For", "198.51.100.1")
+	req.Header.Set("X-Forwarded-Host", "spoofed.example.test")
+	req.Header.Set("X-Forwarded-Proto", "https")
 
 	addForwardedHeaders(req)
 
 	if got := req.Header.Get("X-Forwarded-For"); got != "203.0.113.44" {
-		t.Fatalf("X-Forwarded-For = %q, want remote IP", got)
+		t.Fatalf("X-Forwarded-For = %q, want direct remote IP", got)
 	}
 	if got := req.Header.Get("X-Forwarded-Host"); got != "alex.example.test" {
 		t.Fatalf("X-Forwarded-Host = %q, want host", got)
+	}
+	if got := req.Header.Get("X-Forwarded-Proto"); got != "http" {
+		t.Fatalf("X-Forwarded-Proto = %q, want direct request proto", got)
 	}
 }
 
@@ -171,6 +186,121 @@ func TestClientReportsAuthenticationFailure(t *testing.T) {
 	}
 }
 
+func TestControlTLSTrustedCertificateRoutesTunnel(t *testing.T) {
+	cert, _ := newTestControlCertificate(t)
+	caFile := writeControlCAFile(t, cert)
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("tls ok"))
+	}))
+	defer local.Close()
+
+	control := tls.NewListener(listenLocal(t), &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	})
+	defer control.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:              "alex",
+			ServerAddr:        control.Addr().String(),
+			Target:            local.URL,
+			Token:             "dev-token",
+			ControlTLS:        true,
+			ControlCACertFile: caFile,
+		})
+	}()
+	waitForTunnel(t, relay, "alex")
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	res := rec.Result()
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("ReadAll returned error: %v", err)
+	}
+	if string(body) != "tls ok" {
+		t.Fatalf("body = %q, want tls ok", string(body))
+	}
+}
+
+func TestControlTLSRejectsUntrustedCertificate(t *testing.T) {
+	cert, _ := newTestControlCertificate(t)
+	control := tls.NewListener(listenLocal(t), &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	})
+	defer control.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	err := client.Run(ctx, client.Config{
+		Name:       "alex",
+		ServerAddr: control.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		Token:      "dev-token",
+		ControlTLS: true,
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "TLS handshake") {
+		t.Fatalf("error = %q, want TLS handshake failure", err.Error())
+	}
+}
+
+func TestControlTLSInsecureSkipVerifyAllowsSelfSignedCertificate(t *testing.T) {
+	cert, _ := newTestControlCertificate(t)
+	control := tls.NewListener(listenLocal(t), &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	})
+	defer control.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:                      "alex",
+			ServerAddr:                control.Addr().String(),
+			Target:                    "127.0.0.1:3000",
+			Token:                     "dev-token",
+			ControlTLS:                true,
+			ControlInsecureSkipVerify: true,
+		})
+	}()
+	waitForTunnel(t, relay, "alex")
+}
+
 func TestServerMatchesDomainCaseInsensitivelyWithTrailingDots(t *testing.T) {
 	relay := New(Config{
 		Domain: "Example.Test.",
@@ -183,6 +313,31 @@ func TestServerMatchesDomainCaseInsensitivelyWithTrailingDots(t *testing.T) {
 	}
 	if name != "alex" {
 		t.Fatalf("name = %q, want %q", name, "alex")
+	}
+}
+
+func TestControlHandshakeDeadlineClosesIdleConnection(t *testing.T) {
+	oldTimeout := handshakeTimeout
+	handshakeTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { handshakeTimeout = oldTimeout })
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		relay.handleControlConn(serverConn)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("control connection stayed open past handshake timeout")
 	}
 }
 
@@ -242,4 +397,58 @@ func waitForTunnel(t *testing.T, relay *Server, name string) {
 	}
 
 	t.Fatalf("timed out waiting for tunnel %q", name)
+}
+
+func newTestControlCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey returned error: %v", err)
+	}
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		t.Fatalf("rand.Int returned error: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName: "127.0.0.1",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              []string{"localhost"},
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate returned error: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("X509KeyPair returned error: %v", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		t.Fatal("AppendCertsFromPEM returned false")
+	}
+	return cert, roots
+}
+
+func writeControlCAFile(t *testing.T, cert tls.Certificate) string {
+	t.Helper()
+
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	path := filepath.Join(t.TempDir(), "control-ca.pem")
+	if err := os.WriteFile(path, caPEM, 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	return path
 }

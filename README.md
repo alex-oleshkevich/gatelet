@@ -12,16 +12,16 @@ Gatelet exposes a local HTTP service through a stable public subdomain. It is a 
 ```mermaid
 flowchart LR
     Browser[Browser] -->|HTTP Host: alex.example.com| Relay[gateletd]
-    Relay -->|yamux stream over control connection| Client[gatelet]
+    Relay -->|yamux stream over TLS control connection| Client[gatelet]
     Client -->|HTTP| Local[localhost:3000]
     Local --> Client --> Relay --> Browser
 ```
 
-`gatelet` opens an outbound TCP connection to `gateletd`, authenticates with a shared token using a challenge-response handshake, and registers a tunnel name such as `alex`. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
+`gatelet` opens an outbound control connection to `gateletd`, authenticates with a shared token using a challenge-response handshake, and registers a tunnel name such as `alex`. The `gatelet` CLI uses TLS for this control connection by default. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
 
 ## Current Scope
 
-Gatelet currently supports HTTP tunneling only. TLS termination, automatic certificates, persistent account storage, rate limits, and raw TCP forwarding are not implemented yet.
+Gatelet currently supports HTTP tunneling only. Public HTTP TLS termination, automatic certificates, persistent account storage, rate limits, and raw TCP forwarding are not implemented yet.
 
 ## Requirements
 
@@ -70,20 +70,24 @@ gateletd --domain example.test --http 127.0.0.1:8080 --control 127.0.0.1:4443 --
 Start the tunnel client:
 
 ```sh
-gatelet alex --server 127.0.0.1:4443 --to http://127.0.0.1:3000 --token dev-token
+gatelet alex --server 127.0.0.1:4443 --to http://127.0.0.1:3000 --token dev-token --control-plaintext
 ```
 
-Plain client mode prints one line for each incoming request:
+Plain client mode prints one line for each completed or failed incoming request:
 
 ```text
-GET /path?query
-POST /api/items
+url https://alex.example.test
+target http://127.0.0.1:3000
+GET /path?query 200 0B 203.0.113.44
+POST /api/items 500 1.4kb 203.0.113.44
 ```
+
+Use `--log-format jsonl` or `--log-format json` when piping request summaries into tooling. Request records include `method`, `path`, `status`, `request_size`, `remote_ip`, `duration_ms`, and `error` when forwarding fails.
 
 For an interactive local dashboard, add `--tui`:
 
 ```sh
-gatelet alex --server 127.0.0.1:4443 --to http://127.0.0.1:3000 --token dev-token --tui
+gatelet alex --server 127.0.0.1:4443 --to http://127.0.0.1:3000 --token dev-token --control-plaintext --tui
 ```
 
 Send a request through the relay:
@@ -99,14 +103,26 @@ The response should come from the local web service.
 Run `gateletd` on a public server:
 
 ```sh
-gateletd --domain example.com --http :80 --control :4443 --token "$GATELET_TOKEN"
+gateletd --domain example.com --http :80 --control :4443 --token "$GATELET_TOKEN" \
+  --control-tls-cert /etc/letsencrypt/live/example.com/fullchain.pem \
+  --control-tls-key /etc/letsencrypt/live/example.com/privkey.pem
 ```
+
+To avoid exposing the token in process arguments, prefer the environment variable form:
+
+```sh
+GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --control :4443
+```
+
+Add `--control-tls-cert` and `--control-tls-key` for production control-channel TLS.
 
 Run `gatelet` on your local machine:
 
 ```sh
 gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN"
 ```
+
+The client also reads `GATELET_TOKEN` when `--token` is omitted. If the control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments without control TLS.
 
 Then open:
 
@@ -137,7 +153,7 @@ export GATELET_TOKEN='replace-with-a-long-random-token'
 docker compose -f compose.example.yml up -d --build
 ```
 
-`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`.
+`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. It does not configure a control TLS certificate; use `--control-plaintext` for clients that connect to this example deployment.
 
 For Uncloud, deploy the compose file with `uc` from the host or project where you manage services:
 
@@ -215,7 +231,7 @@ Terraform is a better fit if you want DNS as code. Use the official Cloudflare p
 ### `gateletd`
 
 ```sh
-gateletd --domain example.com --http :80 --control :4443 --token "$GATELET_TOKEN"
+GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --control :4443
 ```
 
 | Flag | Required | Description |
@@ -223,7 +239,9 @@ gateletd --domain example.com --http :80 --control :4443 --token "$GATELET_TOKEN
 | `--domain` | Yes | Base domain used for tunnel subdomains |
 | `--http` | No | Public HTTP listen address, default `:8080` |
 | `--control` | No | Tunnel control listen address, default `:4443` |
-| `--token` | Yes | Shared authentication token required from clients |
+| `--token` | Alternative | Shared authentication token required from clients; prefer `GATELET_TOKEN` in production |
+| `--control-tls-cert` | No | PEM certificate chain for TLS on the control listener |
+| `--control-tls-key` | No | PEM private key for TLS on the control listener |
 
 ### `gatelet`
 
@@ -237,8 +255,13 @@ gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token 
 | `--name` | Alternative | Tunnel name if not using the positional form |
 | `--server` | Yes | `gateletd` control address |
 | `--to` | Yes | Local HTTP target, with or without `http://` |
-| `--token` | Yes | Shared authentication token |
+| `--token` | Alternative | Shared authentication token; prefer `GATELET_TOKEN` in production |
 | `--domain` | No | Public tunnel domain for display, inferred from `--server` when empty |
+| `--log-format` | No | Plain-mode output format: `text`, `json`, or `jsonl`; default `text` |
+| `--control-plaintext` | No | Disable TLS for the control connection; intended for local development only |
+| `--control-ca` | No | PEM CA bundle used to verify the control server certificate |
+| `--control-server-name` | No | Override the TLS server name used for control certificate verification |
+| `--control-insecure-skip-verify` | No | Use TLS encryption without certificate verification; explicit insecure opt-in |
 | `--tui` | No | Show the Bubble Tea live dashboard instead of plain request logs |
 
 Tunnel names must be lowercase DNS labels: letters, numbers, and interior hyphens only.
@@ -246,6 +269,8 @@ Tunnel names must be lowercase DNS labels: letters, numbers, and interior hyphen
 In TUI mode, `gatelet` shows the public URL, connection status, request history, selected request details, headers, timing, status, errors, and capped text body previews. Press `p` to pause or resume new requests; paused requests wait until resume or timeout.
 
 `gateletd` writes structured text logs for startup, control connections, authentication, tunnel registration, incoming requests, tunnel misses, forwards, statuses, durations, byte counts, and forwarding errors.
+
+The relay sets request timeouts and header limits on its public HTTP server. It also overwrites inbound `X-Forwarded-*` headers before forwarding to the local service so public clients cannot spoof the remote IP, original host, or original protocol.
 
 ## Operational Notes
 
@@ -255,7 +280,7 @@ In TUI mode, `gatelet` shows the public URL, connection status, request history,
 - Broken or unavailable tunnels return `502`.
 - Hostnames are matched case-insensitively and may include a trailing dot.
 - The forwarded request preserves the original public `Host` header.
-- The shared token is not sent directly during tunnel registration; the client proves token knowledge with an HMAC challenge response.
+- The shared token is not sent directly during tunnel registration; the client proves token knowledge with an HMAC challenge response after the control transport is established.
 
 ## Development
 
@@ -271,6 +296,14 @@ Run vet:
 go vet ./...
 ```
 
+Run the Docker E2E smoke test:
+
+```sh
+./scripts/e2e-docker.sh
+```
+
+The E2E script requires Docker. It builds the image, creates an isolated Docker network, starts `gateletd`, `gatelet`, and a target HTTP service, verifies GET/POST forwarding and unknown-tunnel behavior, then cleans up.
+
 Build both binaries:
 
 ```sh
@@ -281,7 +314,8 @@ go build -o /tmp/gatelet ./cmd/gatelet
 ## Limitations
 
 - HTTP only; raw TCP tunnels are not supported.
-- TLS is not handled by Gatelet yet. Put a reverse proxy such as Caddy, nginx, or HAProxy in front of `gateletd` for HTTPS.
+- Public HTTP TLS is not handled by Gatelet yet. Put a reverse proxy such as Caddy, nginx, or HAProxy in front of `gateletd` for HTTPS.
+- The control listener only uses TLS when `gateletd` is started with `--control-tls-cert` and `--control-tls-key`. Clients must pass `--control-plaintext` to connect to a raw control listener.
 - Authentication is a single shared token.
 - There is no reservation database for tunnel names.
 - The TUI dashboard is local to one active `gatelet` process; there is no daemon-side management API.
