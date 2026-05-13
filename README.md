@@ -20,7 +20,7 @@ flowchart LR
     Local --> Client --> Relay --> Browser
 ```
 
-`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `alex`. The `gatelet` CLI uses TLS for this control connection by default. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
+`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `alex`. The control connection can use raw TCP/TLS or WebSocket over the HTTP listener at `/__gatelet/control`. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
 
 ## Current Scope
 
@@ -116,36 +116,35 @@ The response should come from the local web service.
 
 ## Public Server Setup
 
-Run `gateletd` on a public server:
+Run `gateletd` on a public server behind an HTTPS reverse proxy:
 
 ```sh
-gateletd --domain example.com --http :80 --control :4443 --token "$GATELET_TOKEN" \
-  --control-tls-cert /etc/letsencrypt/live/example.com/fullchain.pem \
-  --control-tls-key /etc/letsencrypt/live/example.com/privkey.pem
+GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :8080
 ```
 
-To avoid exposing the token in process arguments, prefer the environment variable form:
+The HTTP listener handles both public tunnel requests and WebSocket control upgrades:
 
-```sh
-GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --control :4443
+```text
+GET /__gatelet/control  # WebSocket control endpoint
+Host: example.com
 ```
 
 For token rotation, run the daemon with multiple token IDs. Active tokens are accepted; inactive tokens are rejected but can stay in the config while clients are being migrated:
 
 ```sh
 GATELET_TOKENS='current=new-token,previous=old-token,retired=oldest-token:inactive' \
-  gateletd --domain example.com --http :80 --control :4443
+  gateletd --domain example.com --http :8080
 ```
 
-Add `--control-tls-cert` and `--control-tls-key` for production control-channel TLS.
+Raw TCP control is still available on `--control`, default `:4443`. Add `--control-tls-cert` and `--control-tls-key` when exposing raw TCP control in production.
 
 Run `gatelet` on your local machine:
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server relay.example.com:4443 --token "$GATELET_TOKEN" --token-id current
+gatelet alex http://127.0.0.1:3000 --server wss://example.com/__gatelet/control --token "$GATELET_TOKEN" --token-id current
 ```
 
-The client also reads `GATELET_SERVER`, `GATELET_TOKEN`, and `GATELET_TOKEN_ID` when `--server`, `--token`, or `--token-id` are omitted. If the control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments without control TLS.
+The client also reads `GATELET_SERVER`, `GATELET_TOKEN`, and `GATELET_TOKEN_ID` when `--server`, `--token`, or `--token-id` are omitted. If a `wss://` endpoint or raw TLS control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments with raw TCP control and no TLS.
 
 Then open:
 
@@ -176,7 +175,7 @@ export GATELET_TOKEN='replace-with-a-long-random-token'
 docker compose -f compose.example.yml up -d --build
 ```
 
-`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. It does not configure a control TLS certificate; use `--control-plaintext` for clients that connect to this example deployment.
+`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. For WebSocket control, point clients at `ws://localhost:8080/__gatelet/control`. For raw TCP control on `4443`, use `--control-plaintext` unless you configure a control TLS certificate.
 
 For Uncloud, deploy the compose file with `uc` from the host or project where you manage services:
 
@@ -184,12 +183,13 @@ For Uncloud, deploy the compose file with `uc` from the host or project where yo
 GATELET_TOKEN='replace-with-a-long-random-token' uc deploy -f compose.yml
 ```
 
-The ignored `compose.yml` uses Uncloud `x-ports`. In Uncloud, public HTTPS traffic is routed by Caddy for `*.tun.aresa.me`, while the client control listener is published directly on host port `4443`:
+The ignored `compose.yml` uses Uncloud `x-ports`. In Uncloud, public HTTPS traffic is routed by Caddy for `*.tun.aresa.me`, and WebSocket control can share the same HTTPS route on the base host:
 
 | Published endpoint | Container port | Purpose |
 |---|---|---|
 | `*.tun.aresa.me/https` | `8080` | Public HTTPS tunnel traffic via Caddy |
-| `4443/tcp@host` | `4443` | Gatelet client control connection |
+| `tun.aresa.me/__gatelet/control` | `8080` | WebSocket client control connection |
+| `4443/tcp@host` | `4443` | Optional raw TCP client control connection |
 
 ## DNS Setup
 
@@ -216,7 +216,7 @@ If Uncloud gives you a hostname instead of a stable IP address, use `CNAME` reco
 | `CNAME` | `tun` | Uncloud hostname | DNS only |
 | `CNAME` | `*.tun` | Uncloud hostname | DNS only |
 
-Use **DNS only** for the current Gatelet deployment. The client control connection uses TCP port `4443`, which is not a normal Cloudflare proxied HTTP origin flow. Put a reverse proxy or Cloudflare Tunnel in front of `gateletd` before enabling Cloudflare proxying.
+With WebSocket control, Cloudflare can proxy normal HTTPS/WebSocket traffic on port `443` to your reverse proxy. Raw TCP control on `4443` still requires DNS-only, Cloudflare Spectrum, Cloudflare Tunnel, or another TCP proxy.
 
 Cloudflare dashboard path:
 
@@ -254,7 +254,7 @@ Terraform is a better fit if you want DNS as code. Use the official Cloudflare p
 ### `gateletd`
 
 ```sh
-GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --control :4443
+GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :8080
 ```
 
 | Flag | Required | Description |
@@ -273,14 +273,14 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --contro
 ### `gatelet`
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server relay.example.com:4443 --token "$GATELET_TOKEN" --token-id current
+gatelet alex http://127.0.0.1:3000 --server wss://example.com/__gatelet/control --token "$GATELET_TOKEN" --token-id current
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | positional name | Yes | Tunnel name, for example `alex` |
 | `--name` | Alternative | Tunnel name if not using the positional form |
-| `--server` | Alternative | `gateletd` control address; prefer `GATELET_SERVER` for repeated local use |
+| `--server` | Alternative | `gateletd` control address or WebSocket URL, for example `wss://example.com/__gatelet/control`; prefer `GATELET_SERVER` for repeated local use |
 | positional target | Yes | Local HTTP target, with or without `http://` |
 | `--to` | Alternative | Compatibility alias for the positional target |
 | `--token` | Alternative | Authentication token; prefer `GATELET_TOKEN` in production |
@@ -288,9 +288,9 @@ gatelet alex http://127.0.0.1:3000 --server relay.example.com:4443 --token "$GAT
 | `--domain` | No | Public tunnel domain for display, inferred from `--server` when empty |
 | `--log-format` | No | Plain-mode output format: `text`, `json`, or `jsonl`; default `text` |
 | `--preview-size` | No | Maximum request/response body preview bytes captured for logs and TUI; default `4096` |
-| `--control-plaintext` | No | Disable TLS for the control connection; intended for local development only |
-| `--control-ca` | No | PEM CA bundle used to verify the control server certificate |
-| `--control-server-name` | No | Override the TLS server name used for control certificate verification |
+| `--control-plaintext` | No | Disable TLS for raw TCP control; ignored for `ws://` and `wss://` URLs |
+| `--control-ca` | No | PEM CA bundle used to verify raw TLS or `wss://` control server certificates |
+| `--control-server-name` | No | Override the TLS server name used for raw TLS or `wss://` control certificate verification |
 | `--control-insecure-skip-verify` | No | Use TLS encryption without certificate verification; explicit insecure opt-in |
 | `--tui` | No | Show the Bubble Tea live dashboard instead of plain request logs |
 
@@ -375,7 +375,7 @@ GoReleaser builds `gatelet` and `gateletd`, creates Linux and macOS archives, wr
 
 - HTTP only; raw TCP tunnels are not supported.
 - Public HTTP TLS is not handled by Gatelet yet. Put a reverse proxy such as Caddy, nginx, or HAProxy in front of `gateletd` for HTTPS.
-- The control listener only uses TLS when `gateletd` is started with `--control-tls-cert` and `--control-tls-key`. Clients must pass `--control-plaintext` to connect to a raw control listener.
+- Raw TCP control only uses TLS when `gateletd` is started with `--control-tls-cert` and `--control-tls-key`. Clients must pass `--control-plaintext` to connect to a raw plaintext control listener. WebSocket control uses `ws://` for plaintext and `wss://` for TLS through the HTTP listener.
 - Token specs are currently configured at daemon startup; live token reload is not implemented yet.
 - There is no reservation database for tunnel names.
 - The TUI dashboard is local to one active `gatelet` process; there is no daemon-side management API.

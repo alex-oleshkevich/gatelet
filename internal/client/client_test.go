@@ -229,6 +229,14 @@ func TestPublicURLDefaultsDomainFromServerAddress(t *testing.T) {
 	}
 }
 
+func TestPublicURLDefaultsDomainFromWebSocketServerURL(t *testing.T) {
+	got := PublicURL("alex", "", "wss://tun.aresa.me/__gatelet/control")
+	want := "https://alex.tun.aresa.me"
+	if got != want {
+		t.Fatalf("PublicURL = %q, want %q", got, want)
+	}
+}
+
 func TestRequestLogLineFormatsText(t *testing.T) {
 	got, err := RequestLogLine(RequestEvent{
 		Method:      http.MethodPost,

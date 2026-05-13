@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
 
 	"gatelet/internal/protocol"
@@ -147,6 +148,10 @@ func Run(ctx context.Context, config Config) error {
 }
 
 func dialControl(ctx context.Context, config Config) (net.Conn, error) {
+	if isWebSocketControlAddr(config.ServerAddr) {
+		return dialWebSocketControl(ctx, config)
+	}
+
 	dialer := net.Dialer{}
 	conn, err := dialer.DialContext(ctx, "tcp", config.ServerAddr)
 	if err != nil {
@@ -167,6 +172,34 @@ func dialControl(ctx context.Context, config Config) (net.Conn, error) {
 		return nil, fmt.Errorf("TLS handshake: %w; if the control listener is plaintext, retry with --control-plaintext or enable gateletd --control-tls-cert and --control-tls-key", err)
 	}
 	return tlsConn, nil
+}
+
+func dialWebSocketControl(ctx context.Context, config Config) (net.Conn, error) {
+	options := &websocket.DialOptions{}
+	if strings.HasPrefix(config.ServerAddr, "wss://") {
+		tlsConfig, err := controlTLSConfig(config)
+		if err != nil {
+			return nil, err
+		}
+		options.HTTPClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+		}
+	}
+
+	conn, resp, err := websocket.Dial(ctx, config.ServerAddr, options)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return websocket.NetConn(ctx, conn, websocket.MessageBinary), nil
+}
+
+func isWebSocketControlAddr(addr string) bool {
+	return strings.HasPrefix(addr, "ws://") || strings.HasPrefix(addr, "wss://")
 }
 
 func controlTLSConfig(config Config) (*tls.Config, error) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -177,6 +178,9 @@ func FormatBytes(size int64) string {
 }
 
 func hostWithoutPort(addr string) string {
+	if parsed, err := url.Parse(addr); err == nil && parsed.Host != "" {
+		addr = parsed.Host
+	}
 	if strings.HasPrefix(addr, "[") {
 		if end := strings.Index(addr, "]"); end >= 0 {
 			return strings.Trim(addr[1:end], ".")

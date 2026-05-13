@@ -90,6 +90,112 @@ func TestServerRoutesSubdomainThroughClientTunnel(t *testing.T) {
 	}
 }
 
+func TestServerRoutesThroughWebSocketControlTunnel(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/hello" {
+			t.Fatalf("path = %q, want /hello", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("hello over websocket"))
+	}))
+	defer local.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	httpServer := httptest.NewServer(relay)
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errs := make(chan error, 1)
+	go func() {
+		errs <- client.Run(ctx, client.Config{
+			Name:       "alex",
+			ServerAddr: "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/__gatelet/control",
+			Target:     local.URL,
+			Token:      "dev-token",
+		})
+	}()
+	waitForTunnel(t, relay, "alex")
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/hello", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "hello over websocket" {
+		t.Fatalf("body = %q, want websocket response", got)
+	}
+
+	cancel()
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("client returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not stop")
+	}
+}
+
+func TestServerRoutesThroughSecureWebSocketControlTunnel(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("hello over secure websocket"))
+	}))
+	defer local.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	httpServer := httptest.NewTLSServer(relay)
+	defer httpServer.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(httpServer.Certificate())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errs := make(chan error, 1)
+	go func() {
+		errs <- client.Run(ctx, client.Config{
+			Name:           "alex",
+			ServerAddr:     "wss" + strings.TrimPrefix(httpServer.URL, "https") + "/__gatelet/control",
+			Target:         local.URL,
+			Token:          "dev-token",
+			ControlRootCAs: roots,
+		})
+	}()
+	waitForTunnel(t, relay, "alex")
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/hello", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "hello over secure websocket" {
+		t.Fatalf("body = %q, want secure websocket response", got)
+	}
+
+	cancel()
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("client returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not stop")
+	}
+}
+
 func TestServerReturnsLocalRedirectWithoutFollowingIt(t *testing.T) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -386,6 +492,58 @@ func TestServerRejectsDuplicateTunnelNameAndKeepsFirstClient(t *testing.T) {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("logs missing %q:\n%s", want, logText)
 		}
+	}
+}
+
+func TestServerRejectsDuplicateTunnelNameOverWebSocket(t *testing.T) {
+	firstLocal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first"))
+	}))
+	defer firstLocal.Close()
+	secondLocal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer secondLocal.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+	httpServer := httptest.NewServer(relay)
+	defer httpServer.Close()
+	controlURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/__gatelet/control"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- client.Run(ctx, client.Config{
+			Name:       "alex",
+			ServerAddr: controlURL,
+			Target:     firstLocal.URL,
+			Token:      "dev-token",
+		})
+	}()
+	waitForTunnel(t, relay, "alex")
+
+	err := client.Run(ctx, client.Config{
+		Name:       "alex",
+		ServerAddr: controlURL,
+		Target:     secondLocal.URL,
+		Token:      "dev-token",
+	})
+	if err == nil {
+		t.Fatal("second client returned nil error")
+	}
+	if !strings.Contains(err.Error(), "tunnel name already in use") {
+		t.Fatalf("second client error = %q, want duplicate-name error", err.Error())
+	}
+
+	select {
+	case err := <-firstDone:
+		t.Fatalf("first client disconnected after duplicate registration: %v", err)
+	default:
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
 
 	"gatelet/internal/protocol"
@@ -228,6 +229,10 @@ func (s *Server) TunnelStats(name string) (TunnelStats, bool) {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	if r.URL.Path == "/__gatelet/control" {
+		s.serveWebSocketControl(w, r)
+		return
+	}
 	if s.isAdminHost(r.Host) {
 		switch r.URL.Path {
 		case "/__gatelet/status":
@@ -293,6 +298,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Info("forward completed", "name", name, "method", r.Method, "uri", r.URL.RequestURI(), "status", resp.StatusCode, "duration", time.Since(started), "bytes", bytes)
+}
+
+func (s *Server) serveWebSocketControl(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		s.logger.Warn("websocket control upgrade failed", "host", r.Host, "remote", r.RemoteAddr, "error", err)
+		return
+	}
+
+	s.logger.Info("websocket control connection accepted", "host", r.Host, "remote", r.RemoteAddr)
+	s.handleControlConn(websocket.NetConn(r.Context(), conn, websocket.MessageBinary))
 }
 
 func (s *Server) handleControlConn(conn net.Conn) {
