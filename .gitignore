@@ -7,3 +7,4 @@
 .envrc
 compose.yml
 .superpowers/
+dist/

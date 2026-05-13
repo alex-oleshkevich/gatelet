@@ -1,0 +1,21 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  disable:
+    - errcheck
+  enable:
+    - bodyclose
+    - misspell
+    - unconvert
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

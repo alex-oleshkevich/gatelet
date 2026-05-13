@@ -1,0 +1,57 @@
+version: 2
+
+project_name: gatelet
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: gatelet
+    main: ./cmd/gatelet
+    binary: gatelet
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+  - id: gateletd
+    main: ./cmd/gateletd
+    binary: gateletd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: binaries
+    ids:
+      - gatelet
+      - gateletd
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

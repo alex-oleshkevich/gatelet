@@ -133,11 +133,12 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancel()
 		return m, tea.Quit
 	case "esc":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.mode = viewDetail
 			m.bodyScroll = 0
 			m.message = ""
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.mode = viewList
 			m.detailScroll = 0
 			m.message = ""
@@ -156,11 +157,12 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.message = ""
 		}
 	case "b":
-		if m.mode == viewDetail {
+		switch m.mode {
+		case viewDetail:
 			m.mode = viewBody
 			m.bodyScroll = 0
 			m.message = ""
-		} else if m.mode == viewBody {
+		case viewBody:
 			m.mode = viewDetail
 			m.bodyScroll = 0
 			m.message = ""
@@ -196,47 +198,57 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.message = "history cleared"
 		}
 	case "up", "k":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.bodyScroll--
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.detailScroll--
-		} else if m.selected > 0 {
-			m.selected--
+		default:
+			if m.selected > 0 {
+				m.selected--
+			}
 		}
 	case "down", "j":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.bodyScroll++
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.detailScroll++
-		} else if m.selected < len(m.visibleRequests())-1 {
-			m.selected++
+		default:
+			if m.selected < len(m.visibleRequests())-1 {
+				m.selected++
+			}
 		}
 	case "pgup", "u":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.bodyScroll -= max(1, m.bodyHeight())
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.detailScroll -= max(1, m.detailHeight())
 		}
 	case "pgdown", "d", " ":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.bodyScroll += max(1, m.bodyHeight())
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.detailScroll += max(1, m.detailHeight())
 		}
 	case "f", "F":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.plainBody = !m.plainBody
 			m.bodyScroll = 0
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.plainBody = !m.plainBody
 			m.detailScroll = 0
 		}
 	case "home", "g":
-		if m.mode == viewBody {
+		switch m.mode {
+		case viewBody:
 			m.bodyScroll = 0
-		} else if m.mode == viewDetail {
+		case viewDetail:
 			m.detailScroll = 0
-		} else {
+		default:
 			m.selected = 0
 		}
 	case "end", "G":

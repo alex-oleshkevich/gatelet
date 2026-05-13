@@ -28,11 +28,12 @@ func (m model) View() string {
 	}
 
 	var body string
-	if m.mode == viewBody {
+	switch m.mode {
+	case viewBody:
 		body = m.renderBody(width, bodyHeight)
-	} else if m.mode == viewDetail {
+	case viewDetail:
 		body = m.renderDetail(width, bodyHeight)
-	} else {
+	default:
 		body = m.renderList(width, bodyHeight)
 	}
 
@@ -41,12 +42,13 @@ func (m model) View() string {
 
 func (m model) renderHeader(width int) string {
 	left := titleStyle.Render("gatelet") + " " + urlStyle.Render(m.url)
-	if m.mode == viewBody {
+	switch m.mode {
+	case viewBody:
 		left = titleStyle.Render("gatelet") + " " + headStyle.Render("body viewer")
 		if item, ok := m.selectedRequest(); ok {
 			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
 		}
-	} else if m.mode == viewDetail {
+	case viewDetail:
 		left = titleStyle.Render("gatelet") + " " + headStyle.Render("request detail")
 		if item, ok := m.selectedRequest(); ok {
 			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
