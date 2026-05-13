@@ -41,6 +41,35 @@ func TestChallengeResponseValidatesSharedTokenWithoutExposingIt(t *testing.T) {
 	}
 }
 
+func TestParseClientChallengeResponseAcceptsTokenID(t *testing.T) {
+	response, err := ParseClientChallengeResponse([]byte(`{"token_id":"current","response":"abc123"}`))
+	if err != nil {
+		t.Fatalf("ParseClientChallengeResponse returned error: %v", err)
+	}
+	if response.TokenID != "current" {
+		t.Fatalf("TokenID = %q, want current", response.TokenID)
+	}
+	if response.EffectiveTokenID() != "current" {
+		t.Fatalf("EffectiveTokenID = %q, want current", response.EffectiveTokenID())
+	}
+}
+
+func TestParseClientChallengeResponseKeepsLegacyDefaultTokenID(t *testing.T) {
+	response, err := ParseClientChallengeResponse([]byte(`{"response":"abc123"}`))
+	if err != nil {
+		t.Fatalf("ParseClientChallengeResponse returned error: %v", err)
+	}
+	if response.EffectiveTokenID() != DefaultTokenID {
+		t.Fatalf("EffectiveTokenID = %q, want %q", response.EffectiveTokenID(), DefaultTokenID)
+	}
+}
+
+func TestParseClientChallengeResponseRejectsInvalidTokenID(t *testing.T) {
+	if _, err := ParseClientChallengeResponse([]byte(`{"token_id":"bad/id","response":"abc123"}`)); err == nil {
+		t.Fatal("ParseClientChallengeResponse returned nil error")
+	}
+}
+
 func TestParseClientHelloValidatesName(t *testing.T) {
 	hello, err := ParseClientHello([]byte(`{"name":"alex","protocol_version":1,"client_version":"gatelet-test"}`))
 	if err != nil {

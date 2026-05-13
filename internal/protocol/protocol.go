@@ -14,6 +14,7 @@ import (
 const (
 	CurrentProtocolVersion = 1
 	DefaultClientVersion   = "gatelet-dev"
+	DefaultTokenID         = "default"
 
 	HandshakeOK                  = "OK\n"
 	HandshakeErr                 = "ERR authentication failed\n"
@@ -39,7 +40,15 @@ type ServerChallenge struct {
 }
 
 type ClientChallengeResponse struct {
+	TokenID  string `json:"token_id,omitempty"`
 	Response string `json:"response"`
+}
+
+func (r ClientChallengeResponse) EffectiveTokenID() string {
+	if r.TokenID == "" {
+		return DefaultTokenID
+	}
+	return r.TokenID
 }
 
 func NewNonce() (string, error) {
@@ -84,6 +93,11 @@ func ParseClientChallengeResponse(data []byte) (ClientChallengeResponse, error) 
 	var response ClientChallengeResponse
 	if err := json.Unmarshal(data, &response); err != nil {
 		return ClientChallengeResponse{}, fmt.Errorf("parse challenge response: %w", err)
+	}
+	if response.TokenID != "" {
+		if err := ValidateName(response.TokenID); err != nil {
+			return ClientChallengeResponse{}, fmt.Errorf("invalid token id: %w", err)
+		}
 	}
 	if response.Response == "" {
 		return ClientChallengeResponse{}, errors.New("response is required")

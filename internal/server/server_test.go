@@ -266,6 +266,109 @@ func TestClientReportsAuthenticationFailure(t *testing.T) {
 	}
 }
 
+func TestServerAcceptsActiveTokenIDs(t *testing.T) {
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Tokens: []Token{
+			{ID: "current", Value: "new-token", Active: true},
+			{ID: "previous", Value: "old-token", Active: true},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:       "current",
+			ServerAddr: control.Addr().String(),
+			Target:     "127.0.0.1:3000",
+			TokenID:    "current",
+			Token:      "new-token",
+		})
+	}()
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:       "previous",
+			ServerAddr: control.Addr().String(),
+			Target:     "127.0.0.1:3000",
+			TokenID:    "previous",
+			Token:      "old-token",
+		})
+	}()
+
+	waitForTunnel(t, relay, "current")
+	waitForTunnel(t, relay, "previous")
+}
+
+func TestServerRejectsInactiveTokenIDWithoutLoggingTokenValue(t *testing.T) {
+	control := listenLocal(t)
+	defer control.Close()
+
+	var logs lockedBuffer
+	relay := New(Config{
+		Domain: "example.test",
+		Tokens: []Token{
+			{ID: "inactive", Value: "disabled-token", Active: false},
+		},
+		Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	err := client.Run(ctx, client.Config{
+		Name:       "alex",
+		ServerAddr: control.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		TokenID:    "inactive",
+		Token:      "disabled-token",
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "authentication failed") {
+		t.Fatalf("error = %q, want authentication failure", err.Error())
+	}
+
+	logText := logs.String()
+	if !strings.Contains(logText, "token_id=inactive") {
+		t.Fatalf("logs missing token_id:\n%s", logText)
+	}
+	if strings.Contains(logText, "disabled-token") {
+		t.Fatalf("logs leaked token value:\n%s", logText)
+	}
+}
+
+func TestServerAcceptsLegacySingleTokenWithoutTokenID(t *testing.T) {
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	conn := authenticateRawControl(t, control.Addr().String(), "legacy", "dev-token")
+	defer conn.Close()
+	waitForTunnel(t, relay, "legacy")
+}
+
 func TestServerRejectsUnsupportedProtocolVersion(t *testing.T) {
 	relay := New(Config{
 		Domain: "example.test",

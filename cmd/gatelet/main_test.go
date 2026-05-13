@@ -55,6 +55,39 @@ func TestParseConfigAcceptsTokenFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestParseConfigAcceptsTokenID(t *testing.T) {
+	config, err := parseConfig([]string{
+		"alex",
+		"--server", "127.0.0.1:4443",
+		"--to", "127.0.0.1:3000",
+		"--token", "dev-token",
+		"--token-id", "current",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.TokenID != "current" {
+		t.Fatalf("TokenID = %q, want current", config.TokenID)
+	}
+}
+
+func TestParseConfigAcceptsTokenIDFromEnvironment(t *testing.T) {
+	t.Setenv("GATELET_TOKEN", "env-token")
+	t.Setenv("GATELET_TOKEN_ID", "previous")
+
+	config, err := parseConfig([]string{
+		"alex",
+		"--server", "127.0.0.1:4443",
+		"--to", "127.0.0.1:3000",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.TokenID != "previous" {
+		t.Fatalf("TokenID = %q, want previous", config.TokenID)
+	}
+}
+
 func TestParseConfigAcceptsLogFormat(t *testing.T) {
 	config, err := parseConfig([]string{
 		"alex",

@@ -17,7 +17,7 @@ flowchart LR
     Local --> Client --> Relay --> Browser
 ```
 
-`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a shared token using a challenge-response handshake, and registers a tunnel name such as `alex`. The `gatelet` CLI uses TLS for this control connection by default. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
+`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `alex`. The `gatelet` CLI uses TLS for this control connection by default. When `gateletd` receives an HTTP request for `alex.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
 
 ## Current Scope
 
@@ -114,15 +114,22 @@ To avoid exposing the token in process arguments, prefer the environment variabl
 GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --control :4443
 ```
 
+For token rotation, run the daemon with multiple token IDs. Active tokens are accepted; inactive tokens are rejected but can stay in the config while clients are being migrated:
+
+```sh
+GATELET_TOKENS='current=new-token,previous=old-token,retired=oldest-token:inactive' \
+  gateletd --domain example.com --http :80 --control :4443
+```
+
 Add `--control-tls-cert` and `--control-tls-key` for production control-channel TLS.
 
 Run `gatelet` on your local machine:
 
 ```sh
-gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN"
+gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN" --token-id current
 ```
 
-The client also reads `GATELET_TOKEN` when `--token` is omitted. If the control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments without control TLS.
+The client also reads `GATELET_TOKEN` and `GATELET_TOKEN_ID` when `--token` or `--token-id` are omitted. If the control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments without control TLS.
 
 Then open:
 
@@ -239,14 +246,15 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --contro
 | `--domain` | Yes | Base domain used for tunnel subdomains |
 | `--http` | No | Public HTTP listen address, default `:8080` |
 | `--control` | No | Tunnel control listen address, default `:4443` |
-| `--token` | Alternative | Shared authentication token required from clients; prefer `GATELET_TOKEN` in production |
+| `--token` | Alternative | Legacy default authentication token; prefer `GATELET_TOKEN` in production |
+| `--tokens` | Alternative | Comma-separated rotation set, for example `current=new,previous=old,retired=older:inactive`; prefer `GATELET_TOKENS` in production |
 | `--control-tls-cert` | No | PEM certificate chain for TLS on the control listener |
 | `--control-tls-key` | No | PEM private key for TLS on the control listener |
 
 ### `gatelet`
 
 ```sh
-gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN"
+gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN" --token-id current
 ```
 
 | Flag | Required | Description |
@@ -255,7 +263,8 @@ gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token 
 | `--name` | Alternative | Tunnel name if not using the positional form |
 | `--server` | Yes | `gateletd` control address |
 | `--to` | Yes | Local HTTP target, with or without `http://` |
-| `--token` | Alternative | Shared authentication token; prefer `GATELET_TOKEN` in production |
+| `--token` | Alternative | Authentication token; prefer `GATELET_TOKEN` in production |
+| `--token-id` | No | Token ID sent in the auth handshake; defaults to `default` when omitted |
 | `--domain` | No | Public tunnel domain for display, inferred from `--server` when empty |
 | `--log-format` | No | Plain-mode output format: `text`, `json`, or `jsonl`; default `text` |
 | `--control-plaintext` | No | Disable TLS for the control connection; intended for local development only |
@@ -280,7 +289,8 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 - Broken or unavailable tunnels return `502`.
 - Hostnames are matched case-insensitively and may include a trailing dot.
 - The forwarded request preserves the original public `Host` header.
-- The shared token is not sent directly during tunnel registration; the client proves token knowledge with an HMAC challenge response after the control transport is established.
+- Tokens are not sent directly during tunnel registration; the client sends a token ID and proves token knowledge with an HMAC challenge response after the control transport is established.
+- `gateletd` can accept multiple token IDs for rotation. Omit `--token-id` for legacy clients that use the implicit `default` token.
 - The control protocol currently supports protocol version `1`. Unsupported clients receive `ERR unsupported protocol version`.
 - The yamux control session uses periodic ping heartbeats. Dead or unresponsive tunnels are closed and removed from the relay session table.
 
@@ -318,6 +328,6 @@ go build -o /tmp/gatelet ./cmd/gatelet
 - HTTP only; raw TCP tunnels are not supported.
 - Public HTTP TLS is not handled by Gatelet yet. Put a reverse proxy such as Caddy, nginx, or HAProxy in front of `gateletd` for HTTPS.
 - The control listener only uses TLS when `gateletd` is started with `--control-tls-cert` and `--control-tls-key`. Clients must pass `--control-plaintext` to connect to a raw control listener.
-- Authentication is a single shared token.
+- Token specs are currently configured at daemon startup; live token reload is not implemented yet.
 - There is no reservation database for tunnel names.
 - The TUI dashboard is local to one active `gatelet` process; there is no daemon-side management API.

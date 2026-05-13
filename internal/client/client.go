@@ -30,6 +30,7 @@ type Config struct {
 	ServerAddr    string
 	Target        string
 	Token         string
+	TokenID       string
 	Domain        string
 	TUI           bool
 	ControlTLS    bool
@@ -60,6 +61,9 @@ func Run(ctx context.Context, config Config) error {
 	}
 	if config.ClientVersion == "" {
 		config.ClientVersion = protocol.DefaultClientVersion
+	}
+	if config.TokenID == "" {
+		config.TokenID = protocol.DefaultTokenID
 	}
 
 	conn, err := dialControl(ctx, config)
@@ -97,6 +101,7 @@ func Run(ctx context.Context, config Config) error {
 	}
 
 	if err := json.NewEncoder(conn).Encode(protocol.ClientChallengeResponse{
+		TokenID:  config.TokenID,
 		Response: protocol.ChallengeResponse(config.Name, challenge.Nonce, config.Token),
 	}); err != nil {
 		_ = conn.Close()
@@ -151,7 +156,7 @@ func dialControl(ctx context.Context, config Config) (net.Conn, error) {
 	tlsConn := tls.Client(conn, tlsConfig)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("TLS handshake: %w", err)
+		return nil, fmt.Errorf("TLS handshake: %w; if the control listener is plaintext, retry with --control-plaintext or enable gateletd --control-tls-cert and --control-tls-key", err)
 	}
 	return tlsConn, nil
 }

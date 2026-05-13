@@ -28,15 +28,22 @@ var handshakeTimeout = 10 * time.Second
 type Config struct {
 	Domain            string
 	Token             string
+	Tokens            []Token
 	ControlAddr       string
 	Logger            *slog.Logger
 	HeartbeatInterval time.Duration
 	HeartbeatTimeout  time.Duration
 }
 
+type Token struct {
+	ID     string
+	Value  string
+	Active bool
+}
+
 type Server struct {
 	domain            string
-	token             string
+	tokens            map[string]Token
 	logger            *slog.Logger
 	heartbeatInterval time.Duration
 	heartbeatTimeout  time.Duration
@@ -57,12 +64,38 @@ func New(config Config) *Server {
 	}
 	return &Server{
 		domain:            normalizeDNSName(config.Domain),
-		token:             config.Token,
+		tokens:            normalizeTokens(config),
 		logger:            logger,
 		heartbeatInterval: config.HeartbeatInterval,
 		heartbeatTimeout:  config.HeartbeatTimeout,
 		sessions:          make(map[string]*tunnelSession),
 	}
+}
+
+func normalizeTokens(config Config) map[string]Token {
+	tokens := make(map[string]Token)
+	if config.Token != "" {
+		tokens[protocol.DefaultTokenID] = Token{
+			ID:     protocol.DefaultTokenID,
+			Value:  config.Token,
+			Active: true,
+		}
+	}
+	for _, token := range config.Tokens {
+		if token.ID == "" || token.Value == "" {
+			continue
+		}
+		tokens[token.ID] = token
+	}
+	return tokens
+}
+
+func (s *Server) token(id string) (Token, bool) {
+	token, ok := s.tokens[id]
+	if !ok || !token.Active {
+		return Token{}, false
+	}
+	return token, true
 }
 
 func (s *Server) ServeControl(ctx context.Context, ln net.Listener) error {
@@ -195,13 +228,15 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		return
 	}
 	response, err := protocol.ParseClientChallengeResponse(line)
-	if err != nil || !protocol.ValidChallengeResponse(hello.Name, nonce, s.token, response.Response) {
-		s.logger.Warn("authentication failed", "name", hello.Name, "remote", remote, "parse_error", err)
+	tokenID := response.EffectiveTokenID()
+	token, ok := s.token(tokenID)
+	if err != nil || !ok || !protocol.ValidChallengeResponse(hello.Name, nonce, token.Value, response.Response) {
+		s.logger.Warn("authentication failed", "name", hello.Name, "remote", remote, "token_id", tokenID, "parse_error", err)
 		_, _ = conn.Write([]byte(protocol.HandshakeErr))
 		_ = conn.Close()
 		return
 	}
-	s.logger.Info("authentication succeeded", "name", hello.Name, "remote", remote)
+	s.logger.Info("authentication succeeded", "name", hello.Name, "remote", remote, "token_id", tokenID)
 	if _, err := conn.Write([]byte(protocol.HandshakeOK)); err != nil {
 		s.logger.Warn("send auth ok failed", "name", hello.Name, "remote", remote, "error", err)
 		_ = conn.Close()

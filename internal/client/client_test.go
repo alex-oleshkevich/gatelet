@@ -94,6 +94,85 @@ func TestRunReportsUnsupportedProtocolResponse(t *testing.T) {
 	}
 }
 
+func TestRunSuggestsControlPlaintextForPlainControlListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = conn.Write([]byte("not tls\n"))
+	}()
+
+	err = Run(context.Background(), Config{
+		Name:       "alex",
+		ServerAddr: ln.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		Token:      "secret-token",
+		ControlTLS: true,
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "--control-plaintext") {
+		t.Fatalf("error = %q, want --control-plaintext hint", err.Error())
+	}
+}
+
+func TestRunSendsTokenIDInChallengeResponse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+
+	tokenID := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = protocol.ReadLine(conn, 1024)
+		_ = json.NewEncoder(conn).Encode(protocol.ServerChallenge{Nonce: "nonce-value"})
+		line, err := protocol.ReadLine(conn, 1024)
+		if err != nil {
+			return
+		}
+		response, err := protocol.ParseClientChallengeResponse(line)
+		if err != nil {
+			return
+		}
+		tokenID <- response.TokenID
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = Run(ctx, Config{
+		Name:       "alex",
+		ServerAddr: ln.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		Token:      "secret-token",
+		TokenID:    "current",
+	})
+
+	select {
+	case got := <-tokenID:
+		if got != "current" {
+			t.Fatalf("TokenID = %q, want current", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for challenge response")
+	}
+}
+
 func TestLocalHTTPClientDoesNotUseEnvironmentProxy(t *testing.T) {
 	transport, ok := localHTTPClient.Transport.(*http.Transport)
 	if !ok {

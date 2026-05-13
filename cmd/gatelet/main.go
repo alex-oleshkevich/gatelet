@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"gatelet/internal/client"
+	"gatelet/internal/protocol"
 	"gatelet/internal/tui"
 )
 
@@ -55,6 +56,7 @@ func parseConfig(args []string) (client.Config, error) {
 	flags.StringVar(&config.ServerAddr, "server", "", "gateletd control address")
 	flags.StringVar(&config.Target, "to", "", "local target address")
 	flags.StringVar(&config.Token, "token", "", "shared tunnel authentication token")
+	flags.StringVar(&config.TokenID, "token-id", "", "token identifier for daemon-side rotation")
 	flags.StringVar(&config.Domain, "domain", "", "public tunnel domain, inferred from --server when empty")
 	flags.StringVar(&logFormat, "log-format", logFormat, "plain-mode request log format: text, json, or jsonl")
 	flags.BoolVar(&controlPlaintext, "control-plaintext", controlPlaintext, "disable TLS for the control connection")
@@ -100,6 +102,12 @@ func parseConfig(args []string) (client.Config, error) {
 	}
 	if config.Token == "" {
 		return client.Config{}, fmt.Errorf("--token or GATELET_TOKEN is required")
+	}
+	if config.TokenID == "" {
+		config.TokenID = os.Getenv("GATELET_TOKEN_ID")
+	}
+	if config.TokenID == "" {
+		config.TokenID = protocol.DefaultTokenID
 	}
 
 	return config, nil

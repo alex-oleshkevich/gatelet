@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"gatelet/internal/protocol"
 	"gatelet/internal/server"
 )
 
@@ -24,11 +27,13 @@ func main() {
 	var httpAddr string
 	var controlTLSCert string
 	var controlTLSKey string
+	var tokensSpec string
 
 	flag.StringVar(&config.Domain, "domain", "", "base domain for tunnels")
 	flag.StringVar(&httpAddr, "http", ":8080", "public HTTP listen address")
 	flag.StringVar(&config.ControlAddr, "control", ":4443", "tunnel control listen address")
 	flag.StringVar(&config.Token, "token", "", "shared tunnel authentication token")
+	flag.StringVar(&tokensSpec, "tokens", "", "comma-separated token specs: id=value or id=value:inactive")
 	flag.StringVar(&controlTLSCert, "control-tls-cert", "", "control listener TLS certificate file")
 	flag.StringVar(&controlTLSKey, "control-tls-key", "", "control listener TLS private key file")
 	flag.Parse()
@@ -39,8 +44,18 @@ func main() {
 	if config.Token == "" {
 		config.Token = os.Getenv("GATELET_TOKEN")
 	}
-	if config.Token == "" {
-		log.Fatal("--token or GATELET_TOKEN is required")
+	if tokensSpec == "" {
+		tokensSpec = os.Getenv("GATELET_TOKENS")
+	}
+	if tokensSpec != "" {
+		tokens, err := parseTokenSpecs(tokensSpec)
+		if err != nil {
+			log.Fatalf("parse tokens: %v", err)
+		}
+		config.Tokens = tokens
+	}
+	if config.Token == "" && len(config.Tokens) == 0 {
+		log.Fatal("--token/GATELET_TOKEN or --tokens/GATELET_TOKENS is required")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -95,4 +110,50 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http server: %v", err)
 	}
+}
+
+func parseTokenSpecs(spec string) ([]server.Token, error) {
+	var tokens []server.Token
+	for _, rawPart := range strings.Split(spec, ",") {
+		part := strings.TrimSpace(rawPart)
+		if part == "" {
+			continue
+		}
+		id, value, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, fmt.Errorf("token spec %q must use id=value", part)
+		}
+		id = strings.TrimSpace(id)
+		value = strings.TrimSpace(value)
+		if id == "" {
+			return nil, fmt.Errorf("token spec %q has empty id", part)
+		}
+		if err := protocol.ValidateName(id); err != nil {
+			return nil, fmt.Errorf("token spec %q has invalid id: %w", part, err)
+		}
+		if value == "" {
+			return nil, fmt.Errorf("token spec %q has empty value", part)
+		}
+
+		active := true
+		switch {
+		case strings.HasSuffix(value, ":active"):
+			value = strings.TrimSuffix(value, ":active")
+		case strings.HasSuffix(value, ":inactive"):
+			value = strings.TrimSuffix(value, ":inactive")
+			active = false
+		case strings.Contains(value, ":"):
+			return nil, fmt.Errorf("token spec %q has unknown status suffix", part)
+		}
+		if value == "" {
+			return nil, fmt.Errorf("token spec %q has empty value", part)
+		}
+
+		tokens = append(tokens, server.Token{
+			ID:     id,
+			Value:  value,
+			Active: active,
+		})
+	}
+	return tokens, nil
 }
