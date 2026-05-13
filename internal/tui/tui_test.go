@@ -88,6 +88,58 @@ func TestListViewShowsApprovedColumns(t *testing.T) {
 	}
 }
 
+func TestHeaderShowsTargetHealth(t *testing.T) {
+	m := model{
+		url:          "https://alex.tun.aresa.me",
+		status:       "online",
+		targetHealth: targetHealthDown,
+		width:        120,
+		height:       12,
+		now:          time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC),
+		index:        make(map[uint64]int),
+	}
+
+	plain := stripANSI(m.View())
+	if !strings.Contains(plain, "target DOWN") {
+		t.Fatalf("header missing target health:\n%s", plain)
+	}
+}
+
+func TestTargetHealthUpdatesFromRequestEvents(t *testing.T) {
+	m := model{index: make(map[uint64]int)}
+
+	m.applyEvent(client.RequestEvent{
+		ID:         1,
+		Type:       client.EventRequestCompleted,
+		StatusCode: 200,
+		Time:       time.Now(),
+	})
+	if m.targetHealth != targetHealthOK {
+		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthOK)
+	}
+
+	m.applyEvent(client.RequestEvent{
+		ID:         2,
+		Type:       client.EventRequestCompleted,
+		StatusCode: 503,
+		Time:       time.Now(),
+	})
+	if m.targetHealth != targetHealthDegraded {
+		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthDegraded)
+	}
+
+	m.applyEvent(client.RequestEvent{
+		ID:        3,
+		Type:      client.EventRequestFailed,
+		Error:     "connect: connection refused",
+		ErrorKind: client.ErrorKindLocalTarget,
+		Time:      time.Now(),
+	})
+	if m.targetHealth != targetHealthDown {
+		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthDown)
+	}
+}
+
 func TestSelectedRowHighlightsFullWidth(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
@@ -146,6 +198,35 @@ func TestDetailViewShowsRequestDetails(t *testing.T) {
 	for _, want := range []string{"request detail", "Status", "Remote", "Request headers", "User-Agent: curl/8.7.1", "Esc back"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("Detail view missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestDetailViewIdentifiesLocalTargetErrors(t *testing.T) {
+	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
+	m := model{
+		url:    "https://alex.tun.aresa.me",
+		status: "online",
+		mode:   viewDetail,
+		width:  120,
+		height: 20,
+		now:    now,
+		index:  make(map[uint64]int),
+		requests: []requestItem{{
+			ID:         1,
+			Method:     "GET",
+			RequestURI: "/api/users",
+			State:      client.EventRequestFailed,
+			Error:      "connect: connection refused",
+			ErrorKind:  client.ErrorKindLocalTarget,
+			StartedAt:  now,
+		}},
+	}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"Error Kind", "local target", "connect: connection refused"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("detail view missing %q:\n%s", want, plain)
 		}
 	}
 }
@@ -248,6 +329,121 @@ func TestDetailViewTogglesPlainJSONBody(t *testing.T) {
 	}
 	if strings.Contains(plain, `"name": "Alex"`) {
 		t.Fatalf("plain JSON body was formatted:\n%s", plain)
+	}
+}
+
+func TestDetailViewOpensBodyView(t *testing.T) {
+	m := detailActionModel()
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if cmd != nil {
+		t.Fatal("body view returned command, want immediate update")
+	}
+
+	got := updated.(model)
+	if got.mode != viewBody {
+		t.Fatalf("mode = %v, want viewBody", got.mode)
+	}
+	if got.bodyScroll != 0 {
+		t.Fatalf("bodyScroll = %d, want 0", got.bodyScroll)
+	}
+}
+
+func TestBodyViewShowsOnlyBodiesAndFormatsJSON(t *testing.T) {
+	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
+	m := model{
+		url:    "https://alex.tun.aresa.me",
+		status: "online",
+		mode:   viewBody,
+		width:  120,
+		height: 20,
+		now:    now,
+		index:  make(map[uint64]int),
+		requests: []requestItem{{
+			ID:         1,
+			Method:     "POST",
+			RequestURI: "/api/users",
+			StatusCode: 201,
+			State:      client.EventRequestCompleted,
+			StartedAt:  now,
+			RequestHeader: map[string][]string{
+				"User-Agent": {"curl/8.7.1"},
+			},
+			RequestPreview: client.BodyPreview{
+				Size:        int64(len(`{"name":"Alex"}`)),
+				Text:        `{"name":"Alex"}`,
+				ContentType: "application/json",
+			},
+			ResponsePreview: client.BodyPreview{
+				Size:        int64(len(`{"ok":true}`)),
+				Text:        `{"ok":true}`,
+				ContentType: "application/json",
+			},
+		}},
+	}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"body viewer", "Request body [formatted json]", `"name": "Alex"`, "Response body [formatted json]", `"ok": true`} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("body view missing %q:\n%s", want, plain)
+		}
+	}
+	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1"} {
+		if strings.Contains(plain, notWant) {
+			t.Fatalf("body view included detail metadata %q:\n%s", notWant, plain)
+		}
+	}
+}
+
+func TestBodyViewTogglesPlainAndScrollsIndependently(t *testing.T) {
+	m := detailActionModel()
+	m.mode = viewBody
+	body := strings.Repeat("line\n", 40)
+	m.requests[0].RequestPreview = client.BodyPreview{
+		Text:        body,
+		Size:        int64(len(body)),
+		ContentType: "text/plain",
+	}
+	m.bodyScroll = 3
+	m.detailScroll = 9
+
+	updated, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'F'}})
+	got := updated.(model)
+	if !got.plainBody {
+		t.Fatal("plainBody = false, want true after F")
+	}
+	if got.bodyScroll != 0 {
+		t.Fatalf("bodyScroll = %d, want reset to 0", got.bodyScroll)
+	}
+	if got.detailScroll != 9 {
+		t.Fatalf("detailScroll = %d, want unchanged detail scroll", got.detailScroll)
+	}
+
+	updated, _ = got.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	got = updated.(model)
+	if got.bodyScroll != 1 {
+		t.Fatalf("bodyScroll = %d, want 1 after down", got.bodyScroll)
+	}
+	if got.detailScroll != 9 {
+		t.Fatalf("detailScroll = %d, want unchanged detail scroll", got.detailScroll)
+	}
+}
+
+func TestVisibleRequestsANDsFilterTermsAcrossFields(t *testing.T) {
+	m := model{
+		filter: "POST /api 500 203.0.113",
+		requests: []requestItem{
+			{ID: 1, Method: "POST", RequestURI: "/api/users", StatusCode: 500, RemoteAddr: "203.0.113.10:1234"},
+			{ID: 2, Method: "POST", RequestURI: "/api/users", StatusCode: 201, RemoteAddr: "203.0.113.10:1234"},
+			{ID: 3, Method: "GET", RequestURI: "/api/users", StatusCode: 500, RemoteAddr: "203.0.113.10:1234"},
+			{ID: 4, Method: "POST", RequestURI: "/web/users", StatusCode: 500, RemoteAddr: "203.0.113.10:1234"},
+			{ID: 5, Method: "POST", RequestURI: "/api/users", StatusCode: 500, RemoteAddr: "198.51.100.1:1234"},
+		},
+	}
+
+	visible := m.visibleRequests()
+	if len(visible) != 1 || visible[0].ID != 1 {
+		t.Fatalf("visible = %+v, want only request 1", visible)
 	}
 }
 

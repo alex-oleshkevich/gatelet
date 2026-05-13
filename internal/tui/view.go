@@ -28,7 +28,9 @@ func (m model) View() string {
 	}
 
 	var body string
-	if m.mode == viewDetail {
+	if m.mode == viewBody {
+		body = m.renderBody(width, bodyHeight)
+	} else if m.mode == viewDetail {
 		body = m.renderDetail(width, bodyHeight)
 	} else {
 		body = m.renderList(width, bodyHeight)
@@ -39,7 +41,12 @@ func (m model) View() string {
 
 func (m model) renderHeader(width int) string {
 	left := titleStyle.Render("gatelet") + " " + urlStyle.Render(m.url)
-	if m.mode == viewDetail {
+	if m.mode == viewBody {
+		left = titleStyle.Render("gatelet") + " " + headStyle.Render("body viewer")
+		if item, ok := m.selectedRequest(); ok {
+			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
+		}
+	} else if m.mode == viewDetail {
 		left = titleStyle.Render("gatelet") + " " + headStyle.Render("request detail")
 		if item, ok := m.selectedRequest(); ok {
 			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
@@ -51,11 +58,12 @@ func (m model) renderHeader(width int) string {
 		queueDepth = m.pause.QueueDepth()
 	}
 	state := styledConnectionState(m.status)
+	target := styledTargetHealth(m.targetHealth)
 	mode := mutedStyle.Render("running")
 	if m.paused {
 		mode = queuedStyle.Render("paused")
 	}
-	right := fmt.Sprintf("%s  %s  %s", state, mode, mutedStyle.Render(fmt.Sprintf("queued %d", queueDepth)))
+	right := fmt.Sprintf("%s  %s  %s  %s", state, target, mode, mutedStyle.Render(fmt.Sprintf("queued %d", queueDepth)))
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 1
 	if gap < 1 {
@@ -92,6 +100,13 @@ func (m model) statusLabel() string {
 		}
 		return "DETAIL"
 	}
+	if m.mode == viewBody {
+		mode := "FORMAT"
+		if m.plainBody {
+			mode = "PLAIN"
+		}
+		return "BODY " + mode
+	}
 	visible := len(m.visibleRequests())
 	if visible == 0 {
 		if m.paused {
@@ -111,13 +126,19 @@ func (m model) statusLabel() string {
 
 func (m model) statusHelp() string {
 	if m.width < 72 {
+		if m.mode == viewBody {
+			return "Esc back | F format | j/k scroll | q"
+		}
 		if m.mode == viewDetail {
-			return "Esc back | r replay | y curl | q"
+			return "b body | Esc back | r replay | q"
 		}
 		return "Enter open | / filter | p pause | q"
 	}
+	if m.mode == viewBody {
+		return "F format/plain | Esc detail | j/k scroll | q quit"
+	}
 	if m.mode == viewDetail {
-		return "r replay | y copy curl | e save curl | F format/plain | Esc back | j/k scroll | q quit"
+		return "b body | r replay | y copy curl | e save curl | F format/plain | Esc back | j/k scroll | q quit"
 	}
 	return "Enter details | j/k move | / filter | x clear | c copy url | p pause | q quit"
 }
@@ -128,6 +149,23 @@ func styledConnectionState(status string) string {
 		return status2xxStyle.Render(label)
 	}
 	return queuedStyle.Render(label)
+}
+
+func styledTargetHealth(health targetHealth) string {
+	if health == "" {
+		health = targetHealthUnknown
+	}
+	label := "target " + strings.ToUpper(string(health))
+	switch health {
+	case targetHealthOK:
+		return status2xxStyle.Render(label)
+	case targetHealthDegraded:
+		return status3xxStyle.Render(label)
+	case targetHealthDown:
+		return status5xxStyle.Render(label)
+	default:
+		return mutedStyle.Render(label)
+	}
 }
 
 func fitBlock(s string, width, height int) string {

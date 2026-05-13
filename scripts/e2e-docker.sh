@@ -70,7 +70,7 @@ docker run -d --name "$client" --network "$network" \
   --domain e2e.test \
   --control-plaintext >/dev/null
 
-wait_for_log "$daemon" "tunnel registered"
+wait_for_log "$daemon" "tunnel connected"
 wait_for_http "http://$daemon:8080/" "alex.e2e.test"
 
 body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \

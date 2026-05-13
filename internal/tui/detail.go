@@ -35,6 +35,38 @@ func (m model) renderDetail(width, height int) string {
 	return fitBlock(b.String(), width, height)
 }
 
+func (m model) renderBody(width, height int) string {
+	item, ok := m.selectedRequest()
+	if !ok {
+		return fitBlock(rowStyle.Render(mutedStyle.Render("No request selected.")), width, height)
+	}
+
+	content := formatBodyView(item, width, m.plainBody)
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	visible := max(1, height)
+	start := min(max(0, m.bodyScroll), max(0, len(lines)-visible))
+	end := min(len(lines), start+visible)
+
+	var b strings.Builder
+	for _, line := range lines[start:end] {
+		b.WriteString(visibleWindow(line, 0, width))
+		b.WriteString("\n")
+	}
+	if len(lines) > visible && end <= len(lines) {
+		progress := fmt.Sprintf("lines %d-%d of %d", start+1, end, len(lines))
+		b.WriteString(rowStyle.Render(mutedStyle.Render(progress)))
+	}
+	return fitBlock(b.String(), width, height)
+}
+
+func formatBodyView(item requestItem, width int, plainBody bool) string {
+	var b strings.Builder
+	writePreview(&b, bodyTitle("Request body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody)
+	b.WriteString("\n")
+	writePreview(&b, bodyTitle("Response body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody)
+	return strings.TrimRight(b.String(), "\n")
+}
+
 func formatDetail(item requestItem, width int, now time.Time, plainBody bool) string {
 	if now.IsZero() {
 		now = time.Now()
@@ -51,6 +83,9 @@ func formatDetail(item requestItem, width int, now time.Time, plainBody bool) st
 	writeMeta(&b, "Duration", item.Duration.Round(time.Millisecond).String())
 	writeMeta(&b, "Request Size", formatBytes(item.RequestSize))
 	writeMeta(&b, "Response Size", formatBytes(item.ResponseSize))
+	if item.ErrorKind != "" {
+		writeMeta(&b, "Error Kind", errorKindLabel(item.ErrorKind))
+	}
 	if item.Error != "" {
 		writeMeta(&b, "Error", status5xxStyle.Render(item.Error))
 	}
@@ -69,7 +104,25 @@ func formatDetail(item requestItem, width int, now time.Time, plainBody bool) st
 	return strings.TrimRight(b.String(), "\n")
 }
 
+func errorKindLabel(kind client.ErrorKind) string {
+	switch kind {
+	case client.ErrorKindLocalTarget:
+		return status5xxStyle.Render("local target")
+	case client.ErrorKindTunnel:
+		return queuedStyle.Render("tunnel")
+	default:
+		return valStyle.Render(string(kind))
+	}
+}
+
 func (m model) detailHeight() int {
+	if m.height <= 0 {
+		return 24
+	}
+	return max(1, m.height-2)
+}
+
+func (m model) bodyHeight() int {
 	if m.height <= 0 {
 		return 24
 	}

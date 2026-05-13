@@ -59,6 +59,7 @@ func parseConfig(args []string) (client.Config, error) {
 	flags.StringVar(&config.TokenID, "token-id", "", "token identifier for daemon-side rotation")
 	flags.StringVar(&config.Domain, "domain", "", "public tunnel domain, inferred from --server when empty")
 	flags.StringVar(&logFormat, "log-format", logFormat, "plain-mode request log format: text, json, or jsonl")
+	flags.IntVar(&config.PreviewLimit, "preview-size", 0, "maximum request/response body preview bytes captured for TUI and logs")
 	flags.BoolVar(&controlPlaintext, "control-plaintext", controlPlaintext, "disable TLS for the control connection")
 	flags.StringVar(&config.ControlCACertFile, "control-ca", "", "PEM CA bundle for verifying the control server")
 	flags.StringVar(&config.ControlServerName, "control-server-name", "", "TLS server name for the control connection")
@@ -96,6 +97,9 @@ func parseConfig(args []string) (client.Config, error) {
 	}
 	if config.Target == "" {
 		return client.Config{}, fmt.Errorf("--to is required")
+	}
+	if config.PreviewLimit < 0 {
+		return client.Config{}, fmt.Errorf("--preview-size must be non-negative")
 	}
 	if config.Token == "" {
 		config.Token = os.Getenv("GATELET_TOKEN")

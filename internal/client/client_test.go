@@ -294,14 +294,16 @@ func TestRequestLogLineFormatsJSONError(t *testing.T) {
 		RequestSize: 3,
 		Duration:    time.Millisecond,
 		Error:       "local target unavailable",
+		ErrorKind:   ErrorKindLocalTarget,
 	}, LogFormatJSONL)
 	if err != nil {
 		t.Fatalf("RequestLogLine returned error: %v", err)
 	}
 
 	var record struct {
-		Status int    `json:"status"`
-		Error  string `json:"error"`
+		Status    int    `json:"status"`
+		Error     string `json:"error"`
+		ErrorKind string `json:"error_kind"`
 	}
 	if err := json.Unmarshal([]byte(got), &record); err != nil {
 		t.Fatalf("request log is not JSON: %v", err)
@@ -311,6 +313,9 @@ func TestRequestLogLineFormatsJSONError(t *testing.T) {
 	}
 	if record.Error != "local target unavailable" {
 		t.Fatalf("Error = %q, want local target unavailable", record.Error)
+	}
+	if record.ErrorKind != string(ErrorKindLocalTarget) {
+		t.Fatalf("ErrorKind = %q, want %q", record.ErrorKind, ErrorKindLocalTarget)
 	}
 }
 
@@ -352,6 +357,49 @@ func TestHandleStreamLogsCompletedRequestSummary(t *testing.T) {
 	requestLog.assert(t, "GET /hello?name=alex 200 0B 203.0.113.44\n")
 }
 
+func TestHandleStreamUsesConfiguredPreviewLimit(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer local.Close()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	events := make(chan RequestEvent, 4)
+	go handleStream(context.Background(), serverConn, Config{
+		Target:       local.URL,
+		Events:       events,
+		PreviewLimit: 4,
+	})
+
+	_, _ = fmt.Fprint(clientConn, "POST /body HTTP/1.1\r\nHost: alex.example.test\r\nContent-Length: 6\r\n\r\nabcdef")
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	var completed RequestEvent
+	deadline := time.After(time.Second)
+	for completed.Type != EventRequestCompleted {
+		select {
+		case event := <-events:
+			completed = event
+		case <-deadline:
+			t.Fatal("timed out waiting for completed event")
+		}
+	}
+	if completed.RequestPreview.Text != "abcd" {
+		t.Fatalf("RequestPreview.Text = %q, want abcd", completed.RequestPreview.Text)
+	}
+	if !completed.RequestPreview.Omitted || completed.RequestPreview.Reason != "truncated" {
+		t.Fatalf("RequestPreview = %+v, want truncated preview", completed.RequestPreview)
+	}
+}
+
 func TestHandleStreamLogsFailedRequestSummary(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
@@ -371,6 +419,56 @@ func TestHandleStreamLogsFailedRequestSummary(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	requestLog.assert(t, "POST /bad ERR 3B \n")
+}
+
+func TestHandleStreamMarksLocalTargetUnavailable(t *testing.T) {
+	target := unavailableLocalTarget(t)
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	events := make(chan RequestEvent, 4)
+	requestLog := newRequestLogRecorder()
+	go handleStream(context.Background(), serverConn, Config{
+		Target:     target,
+		RequestLog: requestLog,
+		LogFormat:  LogFormatJSON,
+		Events:     events,
+	})
+
+	_, _ = fmt.Fprint(clientConn, "GET /down HTTP/1.1\r\nHost: alex.example.test\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+
+	var failed RequestEvent
+	deadline := time.After(time.Second)
+	for failed.Type != EventRequestFailed {
+		select {
+		case event := <-events:
+			failed = event
+		case <-deadline:
+			t.Fatal("timed out waiting for failed event")
+		}
+	}
+	if failed.ErrorKind != ErrorKindLocalTarget {
+		t.Fatalf("ErrorKind = %q, want %q", failed.ErrorKind, ErrorKindLocalTarget)
+	}
+
+	var record struct {
+		ErrorKind string `json:"error_kind"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(requestLog.String())), &record); err != nil {
+		t.Fatalf("request log is not JSON: %v", err)
+	}
+	if record.ErrorKind != string(ErrorKindLocalTarget) {
+		t.Fatalf("logged ErrorKind = %q, want %q", record.ErrorKind, ErrorKindLocalTarget)
+	}
 }
 
 func TestHandleStreamHoldsRequestsWhilePaused(t *testing.T) {
@@ -410,6 +508,20 @@ func TestHandleStreamHoldsRequestsWhilePaused(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
+}
+
+func unavailableLocalTarget(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	return "http://" + addr
 }
 
 type requestLogRecorder struct {

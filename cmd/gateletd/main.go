@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net"
@@ -20,7 +21,11 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logFormat := "text"
+	logger, err := loggerForFormat(logFormat, os.Stdout)
+	if err != nil {
+		log.Fatal(err)
+	}
 	slog.SetDefault(logger)
 
 	var config server.Config
@@ -28,15 +33,25 @@ func main() {
 	var controlTLSCert string
 	var controlTLSKey string
 	var tokensSpec string
+	var reservedNamesSpec string
+	var allowNamesSpec string
 
 	flag.StringVar(&config.Domain, "domain", "", "base domain for tunnels")
 	flag.StringVar(&httpAddr, "http", ":8080", "public HTTP listen address")
 	flag.StringVar(&config.ControlAddr, "control", ":4443", "tunnel control listen address")
 	flag.StringVar(&config.Token, "token", "", "shared tunnel authentication token")
 	flag.StringVar(&tokensSpec, "tokens", "", "comma-separated token specs: id=value or id=value:inactive")
+	flag.StringVar(&reservedNamesSpec, "reserved-names", "", "comma-separated extra reserved tunnel names")
+	flag.StringVar(&allowNamesSpec, "allow-names", "", "comma-separated allowed tunnel names; empty allows any non-reserved name")
+	flag.StringVar(&logFormat, "log-format", logFormat, "daemon log format: text or json")
 	flag.StringVar(&controlTLSCert, "control-tls-cert", "", "control listener TLS certificate file")
 	flag.StringVar(&controlTLSKey, "control-tls-key", "", "control listener TLS private key file")
 	flag.Parse()
+	logger, err = loggerForFormat(logFormat, os.Stdout)
+	if err != nil {
+		log.Fatal(err)
+	}
+	slog.SetDefault(logger)
 
 	if config.Domain == "" {
 		log.Fatal("--domain is required")
@@ -53,6 +68,26 @@ func main() {
 			log.Fatalf("parse tokens: %v", err)
 		}
 		config.Tokens = tokens
+	}
+	if reservedNamesSpec == "" {
+		reservedNamesSpec = os.Getenv("GATELET_RESERVED_NAMES")
+	}
+	if reservedNamesSpec != "" {
+		names, err := parseNameList(reservedNamesSpec)
+		if err != nil {
+			log.Fatalf("parse reserved names: %v", err)
+		}
+		config.ReservedNames = names
+	}
+	if allowNamesSpec == "" {
+		allowNamesSpec = os.Getenv("GATELET_ALLOW_NAMES")
+	}
+	if allowNamesSpec != "" {
+		names, err := parseNameList(allowNamesSpec)
+		if err != nil {
+			log.Fatalf("parse allow names: %v", err)
+		}
+		config.AllowNames = names
 	}
 	if config.Token == "" && len(config.Tokens) == 0 {
 		log.Fatal("--token/GATELET_TOKEN or --tokens/GATELET_TOKENS is required")
@@ -110,6 +145,32 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http server: %v", err)
 	}
+}
+
+func loggerForFormat(format string, w io.Writer) (*slog.Logger, error) {
+	switch format {
+	case "text":
+		return slog.New(slog.NewTextHandler(w, nil)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, nil)), nil
+	default:
+		return nil, fmt.Errorf("unknown --log-format %q", format)
+	}
+}
+
+func parseNameList(spec string) ([]string, error) {
+	var names []string
+	for _, rawPart := range strings.Split(spec, ",") {
+		name := strings.TrimSpace(rawPart)
+		if name == "" {
+			continue
+		}
+		if err := protocol.ValidateName(name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func parseTokenSpecs(spec string) ([]server.Token, error) {

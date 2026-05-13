@@ -197,7 +197,7 @@ func formatBytes(size int64) string {
 }
 
 func previewLimitForDisplay() int64 {
-	return 4096
+	return int64(client.DefaultPreviewLimit)
 }
 
 func min(a, b int) int {

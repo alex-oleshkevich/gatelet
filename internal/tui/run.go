@@ -39,17 +39,18 @@ func Run(ctx context.Context, config client.Config) error {
 	}()
 
 	m := model{
-		ctx:        runCtx,
-		cancel:     cancel,
-		events:     events,
-		clientErr:  errs,
-		pause:      pause,
-		url:        client.PublicURL(config.Name, config.Domain, config.ServerAddr),
-		target:     config.Target,
-		status:     "connecting",
-		now:        time.Now(),
-		index:      make(map[uint64]int),
-		captureDir: defaultCaptureDir(),
+		ctx:          runCtx,
+		cancel:       cancel,
+		events:       events,
+		clientErr:    errs,
+		pause:        pause,
+		url:          client.PublicURL(config.Name, config.Domain, config.ServerAddr),
+		target:       config.Target,
+		status:       "connecting",
+		targetHealth: targetHealthUnknown,
+		now:          time.Now(),
+		index:        make(map[uint64]int),
+		captureDir:   defaultCaptureDir(),
 	}
 
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()

@@ -18,6 +18,7 @@ const (
 
 	HandshakeOK                  = "OK\n"
 	HandshakeErr                 = "ERR authentication failed\n"
+	HandshakeNameNotAllowed      = "ERR tunnel name not allowed\n"
 	HandshakeUnsupportedProtocol = "ERR unsupported protocol version\n"
 )
 

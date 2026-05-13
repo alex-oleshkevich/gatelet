@@ -122,6 +122,7 @@ func (m model) selectedEvent() (client.RequestEvent, bool) {
 		ResponseSize:    item.ResponseSize,
 		Duration:        item.Duration,
 		Error:           item.Error,
+		ErrorKind:       item.ErrorKind,
 	}, true
 }
 

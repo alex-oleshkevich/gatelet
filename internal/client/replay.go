@@ -89,7 +89,7 @@ func ReplayRequest(ctx context.Context, target string, event RequestEvent) (Requ
 	}
 	defer resp.Body.Close()
 
-	respBody, respPreview := wrapBodyForPreview(resp.Header, resp.Body)
+	respBody, respPreview := wrapBodyForPreview(resp.Header, resp.Body, DefaultPreviewLimit)
 	resp.Body = respBody
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		result.Error = err.Error()

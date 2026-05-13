@@ -82,7 +82,7 @@ GET /path?query 200 0B 203.0.113.44
 POST /api/items 500 1.4kb 203.0.113.44
 ```
 
-Use `--log-format jsonl` or `--log-format json` when piping request summaries into tooling. Request records include `method`, `path`, `status`, `request_size`, `remote_ip`, `duration_ms`, and `error` when forwarding fails.
+Use `--log-format jsonl` or `--log-format json` when piping request summaries into tooling. Request records include `method`, `path`, `status`, `request_size`, `remote_ip`, `duration_ms`, `error`, and `error_kind` when forwarding fails.
 
 For an interactive local dashboard, add `--tui`:
 
@@ -248,6 +248,9 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --contro
 | `--control` | No | Tunnel control listen address, default `:4443` |
 | `--token` | Alternative | Legacy default authentication token; prefer `GATELET_TOKEN` in production |
 | `--tokens` | Alternative | Comma-separated rotation set, for example `current=new,previous=old,retired=older:inactive`; prefer `GATELET_TOKENS` in production |
+| `--reserved-names` | No | Comma-separated extra tunnel names to reject; `admin`, `www`, `api`, and `metrics` are always reserved |
+| `--allow-names` | No | Comma-separated tunnel names allowed to connect; empty allows any non-reserved valid name |
+| `--log-format` | No | Daemon log format: `text` or `json`; default `text` |
 | `--control-tls-cert` | No | PEM certificate chain for TLS on the control listener |
 | `--control-tls-key` | No | PEM private key for TLS on the control listener |
 
@@ -267,6 +270,7 @@ gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token 
 | `--token-id` | No | Token ID sent in the auth handshake; defaults to `default` when omitted |
 | `--domain` | No | Public tunnel domain for display, inferred from `--server` when empty |
 | `--log-format` | No | Plain-mode output format: `text`, `json`, or `jsonl`; default `text` |
+| `--preview-size` | No | Maximum request/response body preview bytes captured for logs and TUI; default `4096` |
 | `--control-plaintext` | No | Disable TLS for the control connection; intended for local development only |
 | `--control-ca` | No | PEM CA bundle used to verify the control server certificate |
 | `--control-server-name` | No | Override the TLS server name used for control certificate verification |
@@ -275,9 +279,22 @@ gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token 
 
 Tunnel names must be lowercase DNS labels: letters, numbers, and interior hyphens only.
 
-In TUI mode, `gatelet` shows the public URL, connection status, request history, selected request details, headers, timing, status, errors, and capped text body previews. Press `p` to pause or resume new requests; paused requests wait until resume or timeout. In request detail view, press `r` to replay the selected request to the local target, `y` to copy it as a curl command, and `e` to save the curl command under the Gatelet capture directory.
+In TUI mode, `gatelet` shows the public URL, tunnel connection status, local target health, request history, selected request details, headers, timing, status, errors, and capped text body previews. Target health is `ok` after normal local responses, `degraded` after local `5xx` responses, and `down` when the local target cannot be reached. Press `p` to pause or resume new requests; paused requests wait until resume or timeout. In request detail view, press `b` to open a body-only request/response viewer, `r` to replay the selected request to the local target, `y` to copy it as a curl command, and `e` to save the curl command under the Gatelet capture directory. Press `F` in detail or body view to toggle formatted JSON/plain body text.
 
-`gateletd` writes structured text logs for startup, control connections, protocol/client versions, authentication, tunnel registration, incoming requests, tunnel misses, forwards, statuses, durations, byte counts, and forwarding errors.
+List filters split on spaces and AND every term across method, path, status, remote IP, host, and error text. For example, `/ POST /api 500` shows only POST requests under `/api` with status `500`.
+
+`gateletd` writes structured logs for startup, control connections, protocol/client versions, authentication, tunnel lifecycle, incoming requests, tunnel misses, forwards, statuses, durations, byte counts, and forwarding errors. Use `--log-format json` for JSON slog records.
+
+Tunnel lifecycle logs include `connected_at`, `last_seen`, request count, forwarded request bytes, response body bytes, and disconnect reason. Replacement logs also include the replaced tunnel's counters so reconnects are visible without waiting for the old session cleanup.
+
+`gateletd` exposes daemon-only admin endpoints on the base domain, not on tunnel subdomains:
+
+```text
+GET /__gatelet/status  # JSON uptime, active tunnels, request and byte counters
+GET /metrics           # Prometheus text metrics
+```
+
+Requests to the same paths on a tunnel subdomain, such as `https://alex.example.com/metrics`, are still forwarded to the local target.
 
 The relay sets request timeouts and header limits on its public HTTP server. It also overwrites inbound `X-Forwarded-*` headers before forwarding to the local service so public clients cannot spoof the remote IP, original host, or original protocol.
 
@@ -286,6 +303,7 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 - `gateletd` keeps tunnel registrations in memory. Restarting the relay disconnects active tunnels.
 - If a second client registers the same name, it atomically replaces the previous tunnel. The old control session is closed and `gateletd` logs the tunnel name plus old and new remote addresses.
 - Requests for unknown tunnel names return `404`.
+- Reserved tunnel names are rejected during control handshake. `admin`, `www`, `api`, and `metrics` are reserved by default.
 - Broken or unavailable tunnels return `502`.
 - Hostnames are matched case-insensitively and may include a trailing dot.
 - The forwarded request preserves the original public `Host` header.

@@ -28,6 +28,13 @@ const (
 	EventRequestFailed     EventType = "request_failed"
 )
 
+type ErrorKind string
+
+const (
+	ErrorKindLocalTarget ErrorKind = "local_target"
+	ErrorKindTunnel      ErrorKind = "tunnel"
+)
+
 type BodyPreview struct {
 	Text        string
 	ContentType string
@@ -54,6 +61,7 @@ type RequestEvent struct {
 	Duration        time.Duration
 	QueueDepth      int
 	Error           string
+	ErrorKind       ErrorKind
 }
 
 func (e RequestEvent) RequestLine() string {
@@ -114,6 +122,7 @@ func RequestLogLine(event RequestEvent, format LogFormat) (string, error) {
 		RemoteIP:    remoteIP(event.RemoteAddr),
 		DurationMS:  float64(event.Duration.Microseconds()) / 1000,
 		Error:       event.Error,
+		ErrorKind:   event.ErrorKind,
 	}
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -123,14 +132,15 @@ func RequestLogLine(event RequestEvent, format LogFormat) (string, error) {
 }
 
 type requestLogRecord struct {
-	Type        string  `json:"type"`
-	Method      string  `json:"method"`
-	Path        string  `json:"path"`
-	Status      int     `json:"status"`
-	RequestSize int64   `json:"request_size"`
-	RemoteIP    string  `json:"remote_ip"`
-	DurationMS  float64 `json:"duration_ms"`
-	Error       string  `json:"error,omitempty"`
+	Type        string    `json:"type"`
+	Method      string    `json:"method"`
+	Path        string    `json:"path"`
+	Status      int       `json:"status"`
+	RequestSize int64     `json:"request_size"`
+	RemoteIP    string    `json:"remote_ip"`
+	DurationMS  float64   `json:"duration_ms"`
+	Error       string    `json:"error,omitempty"`
+	ErrorKind   ErrorKind `json:"error_kind,omitempty"`
 }
 
 func PublicURL(name, domain, serverAddr string) string {

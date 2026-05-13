@@ -16,6 +16,7 @@ type viewMode int
 const (
 	viewList viewMode = iota
 	viewDetail
+	viewBody
 )
 
 type requestItem struct {
@@ -34,9 +35,19 @@ type requestItem struct {
 	Duration        time.Duration
 	State           client.EventType
 	Error           string
+	ErrorKind       client.ErrorKind
 	StartedAt       time.Time
 	LastUpdate      time.Time
 }
+
+type targetHealth string
+
+const (
+	targetHealthUnknown  targetHealth = "unknown"
+	targetHealthOK       targetHealth = "ok"
+	targetHealthDown     targetHealth = "down"
+	targetHealthDegraded targetHealth = "degraded"
+)
 
 type model struct {
 	ctx       context.Context
@@ -49,6 +60,7 @@ type model struct {
 	target       string
 	captureDir   string
 	status       string
+	targetHealth targetHealth
 	message      string
 	paused       bool
 	mode         viewMode
@@ -57,6 +69,7 @@ type model struct {
 	plainBody    bool
 	selected     int
 	detailScroll int
+	bodyScroll   int
 	width        int
 	height       int
 	now          time.Time
@@ -120,7 +133,11 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cancel()
 		return m, tea.Quit
 	case "esc":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.mode = viewDetail
+			m.bodyScroll = 0
+			m.message = ""
+		} else if m.mode == viewDetail {
 			m.mode = viewList
 			m.detailScroll = 0
 			m.message = ""
@@ -136,6 +153,16 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == viewList && len(m.visibleRequests()) > 0 {
 			m.mode = viewDetail
 			m.detailScroll = 0
+			m.message = ""
+		}
+	case "b":
+		if m.mode == viewDetail {
+			m.mode = viewBody
+			m.bodyScroll = 0
+			m.message = ""
+		} else if m.mode == viewBody {
+			m.mode = viewDetail
+			m.bodyScroll = 0
 			m.message = ""
 		}
 	case "/":
@@ -169,32 +196,45 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.message = "history cleared"
 		}
 	case "up", "k":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.bodyScroll--
+		} else if m.mode == viewDetail {
 			m.detailScroll--
 		} else if m.selected > 0 {
 			m.selected--
 		}
 	case "down", "j":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.bodyScroll++
+		} else if m.mode == viewDetail {
 			m.detailScroll++
 		} else if m.selected < len(m.visibleRequests())-1 {
 			m.selected++
 		}
 	case "pgup", "u":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.bodyScroll -= max(1, m.bodyHeight())
+		} else if m.mode == viewDetail {
 			m.detailScroll -= max(1, m.detailHeight())
 		}
 	case "pgdown", "d", " ":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.bodyScroll += max(1, m.bodyHeight())
+		} else if m.mode == viewDetail {
 			m.detailScroll += max(1, m.detailHeight())
 		}
 	case "f", "F":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.plainBody = !m.plainBody
+			m.bodyScroll = 0
+		} else if m.mode == viewDetail {
 			m.plainBody = !m.plainBody
 			m.detailScroll = 0
 		}
 	case "home", "g":
-		if m.mode == viewDetail {
+		if m.mode == viewBody {
+			m.bodyScroll = 0
+		} else if m.mode == viewDetail {
 			m.detailScroll = 0
 		} else {
 			m.selected = 0
@@ -206,6 +246,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.clampSelection()
 	m.clampDetailScroll()
+	m.clampBodyScroll()
 	return m, nil
 }
 
@@ -264,6 +305,7 @@ func (m *model) applyEvent(event client.RequestEvent) {
 		Duration:        event.Duration,
 		State:           event.Type,
 		Error:           event.Error,
+		ErrorKind:       event.ErrorKind,
 		StartedAt:       event.Time,
 		LastUpdate:      event.Time,
 	}
@@ -276,10 +318,12 @@ func (m *model) applyEvent(event client.RequestEvent) {
 		current := m.requests[idx]
 		mergeRequestItem(&current, item)
 		m.requests[idx] = current
+		m.updateTargetHealth(current)
 		return
 	}
 
 	m.requests = append([]requestItem{item}, m.requests...)
+	m.updateTargetHealth(item)
 	m.rebuildIndex()
 	if len(m.requests) > maxRequests {
 		m.requests = m.requests[:maxRequests]
@@ -298,6 +342,9 @@ func mergeRequestItem(dst *requestItem, src requestItem) {
 	}
 	if src.Error != "" {
 		dst.Error = src.Error
+	}
+	if src.ErrorKind != "" {
+		dst.ErrorKind = src.ErrorKind
 	}
 	if src.Host != "" {
 		dst.Host = src.Host
@@ -325,6 +372,17 @@ func mergeRequestItem(dst *requestItem, src requestItem) {
 	}
 }
 
+func (m *model) updateTargetHealth(item requestItem) {
+	switch {
+	case item.ErrorKind == client.ErrorKindLocalTarget:
+		m.targetHealth = targetHealthDown
+	case item.State == client.EventRequestCompleted && item.StatusCode >= 500:
+		m.targetHealth = targetHealthDegraded
+	case item.State == client.EventRequestCompleted && item.StatusCode > 0:
+		m.targetHealth = targetHealthOK
+	}
+}
+
 func (m *model) rebuildIndex() {
 	m.index = make(map[uint64]int, len(m.requests))
 	for i := range m.requests {
@@ -336,11 +394,18 @@ func (m model) visibleRequests() []requestItem {
 	if m.filter == "" {
 		return m.requests
 	}
-	filter := strings.ToLower(m.filter)
+	terms := strings.Fields(strings.ToLower(m.filter))
 	var out []requestItem
 	for _, item := range m.requests {
 		haystack := strings.ToLower(item.Method + " " + item.RequestURI + " " + item.Host + " " + remoteIP(item.RemoteAddr) + " " + fmt.Sprint(item.StatusCode) + " " + item.Error)
-		if strings.Contains(haystack, filter) {
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(haystack, term) {
+				matched = false
+				break
+			}
+		}
+		if matched {
 			out = append(out, item)
 		}
 	}
@@ -389,5 +454,24 @@ func (m *model) clampDetailScroll() {
 	}
 	if m.detailScroll < 0 {
 		m.detailScroll = 0
+	}
+}
+
+func (m *model) clampBodyScroll() {
+	if m.mode != viewBody {
+		return
+	}
+	item, ok := m.selectedRequest()
+	if !ok {
+		m.bodyScroll = 0
+		return
+	}
+	lines := strings.Split(strings.TrimRight(formatBodyView(item, max(20, m.width), m.plainBody), "\n"), "\n")
+	maxScroll := max(0, len(lines)-m.bodyHeight())
+	if m.bodyScroll > maxScroll {
+		m.bodyScroll = maxScroll
+	}
+	if m.bodyScroll < 0 {
+		m.bodyScroll = 0
 	}
 }

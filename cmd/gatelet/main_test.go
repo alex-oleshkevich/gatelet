@@ -104,6 +104,22 @@ func TestParseConfigAcceptsLogFormat(t *testing.T) {
 	}
 }
 
+func TestParseConfigAcceptsPreviewSize(t *testing.T) {
+	config, err := parseConfig([]string{
+		"alex",
+		"--server", "127.0.0.1:4443",
+		"--to", "127.0.0.1:3000",
+		"--token", "dev-token",
+		"--preview-size", "8192",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.PreviewLimit != 8192 {
+		t.Fatalf("PreviewLimit = %d, want 8192", config.PreviewLimit)
+	}
+}
+
 func TestParseConfigRejectsUnknownLogFormat(t *testing.T) {
 	_, err := parseConfig([]string{
 		"alex",

@@ -9,22 +9,26 @@ import (
 	"unicode/utf8"
 )
 
-const previewLimit = 4096
+const DefaultPreviewLimit = 4096
 
 type bodyPreviewCapture struct {
 	contentType string
+	limit       int
 	buf         bytes.Buffer
 	size        int64
 }
 
-func newBodyPreviewCapture(contentType string) *bodyPreviewCapture {
-	return &bodyPreviewCapture{contentType: contentType}
+func newBodyPreviewCapture(contentType string, limit int) *bodyPreviewCapture {
+	if limit <= 0 {
+		limit = DefaultPreviewLimit
+	}
+	return &bodyPreviewCapture{contentType: contentType, limit: limit}
 }
 
 func (c *bodyPreviewCapture) Write(p []byte) (int, error) {
 	n := len(p)
 	c.size += int64(n)
-	remaining := previewLimit - c.buf.Len()
+	remaining := c.limit - c.buf.Len()
 	if remaining > 0 {
 		if len(p) > remaining {
 			p = p[:remaining]
@@ -49,7 +53,7 @@ func (c *bodyPreviewCapture) Preview() BodyPreview {
 		preview.Reason = "binary body"
 		return preview
 	}
-	if c.size > int64(previewLimit) {
+	if c.size > int64(c.limit) {
 		preview.Omitted = true
 		preview.Reason = "truncated"
 	}
@@ -70,8 +74,8 @@ func (r *previewReadCloser) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func wrapBodyForPreview(header http.Header, body io.ReadCloser) (*previewReadCloser, *bodyPreviewCapture) {
-	capture := newBodyPreviewCapture(header.Get("Content-Type"))
+func wrapBodyForPreview(header http.Header, body io.ReadCloser, limit int) (*previewReadCloser, *bodyPreviewCapture) {
+	capture := newBodyPreviewCapture(header.Get("Content-Type"), limit)
 	return &previewReadCloser{ReadCloser: body, capture: capture}, capture
 }
 

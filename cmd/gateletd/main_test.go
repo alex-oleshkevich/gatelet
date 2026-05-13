@@ -1,6 +1,73 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
+	"strings"
+	"testing"
+)
+
+func TestLoggerForFormatWritesText(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := loggerForFormat("text", &buf)
+	if err != nil {
+		t.Fatalf("loggerForFormat returned error: %v", err)
+	}
+
+	logger.Info("gateletd test", "name", "alex")
+
+	got := buf.String()
+	if !strings.Contains(got, "msg=\"gateletd test\"") || !strings.Contains(got, "name=alex") {
+		t.Fatalf("text log = %q, want slog text record", got)
+	}
+}
+
+func TestLoggerForFormatWritesJSON(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := loggerForFormat("json", &buf)
+	if err != nil {
+		t.Fatalf("loggerForFormat returned error: %v", err)
+	}
+
+	logger.Info("gateletd test", "name", "alex")
+
+	var record map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
+		t.Fatalf("json log is invalid JSON: %v", err)
+	}
+	if record[slog.MessageKey] != "gateletd test" || record["name"] != "alex" {
+		t.Fatalf("json log = %#v, want message and name", record)
+	}
+}
+
+func TestLoggerForFormatRejectsUnknownFormat(t *testing.T) {
+	if _, err := loggerForFormat("jsonl", &bytes.Buffer{}); err == nil {
+		t.Fatal("loggerForFormat returned nil error")
+	}
+}
+
+func TestParseNameListAcceptsCommaSeparatedNames(t *testing.T) {
+	names, err := parseNameList("alex,kyc,api-v2")
+	if err != nil {
+		t.Fatalf("parseNameList returned error: %v", err)
+	}
+	want := []string{"alex", "kyc", "api-v2"}
+	if len(names) != len(want) {
+		t.Fatalf("len(names) = %d, want %d", len(names), len(want))
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("names[%d] = %q, want %q", i, names[i], want[i])
+		}
+	}
+}
+
+func TestParseNameListRejectsInvalidNames(t *testing.T) {
+	if _, err := parseNameList("alex,www.example"); err == nil {
+		t.Fatal("parseNameList returned nil error")
+	}
+}
 
 func TestParseTokenSpecsAcceptsActiveAndInactiveTokens(t *testing.T) {
 	tokens, err := parseTokenSpecs("current=new-token,previous=old-token,inactive=disabled-token:inactive")

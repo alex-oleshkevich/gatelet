@@ -39,6 +39,7 @@ type Config struct {
 	Events            chan<- RequestEvent
 	PauseController   *PauseController
 	PauseTimeout      time.Duration
+	PreviewLimit      int
 	RequestLog        io.Writer
 	LogFormat         LogFormat
 	HeartbeatInterval time.Duration
@@ -61,6 +62,9 @@ func Run(ctx context.Context, config Config) error {
 	}
 	if config.ClientVersion == "" {
 		config.ClientVersion = protocol.DefaultClientVersion
+	}
+	if config.PreviewLimit == 0 {
+		config.PreviewLimit = DefaultPreviewLimit
 	}
 	if config.TokenID == "" {
 		config.TokenID = protocol.DefaultTokenID
@@ -217,7 +221,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	requestURI := req.URL.RequestURI()
 	remoteAddr := requestRemoteAddr(req)
 
-	reqBody, reqPreview := wrapBodyForPreview(req.Header, req.Body)
+	reqBody, reqPreview := wrapBodyForPreview(req.Header, req.Body, config.PreviewLimit)
 	req.Body = reqBody
 	emit(config.Events, RequestEvent{
 		ID:            id,
@@ -278,6 +282,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 				RequestSize:    requestSize,
 				Duration:       time.Since(started),
 				Error:          err.Error(),
+				ErrorKind:      ErrorKindTunnel,
 			}
 			logRequest(config.RequestLog, config.LogFormat, event)
 			emit(config.Events, event)
@@ -288,7 +293,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	targetURL, err := targetRequestURL(config.Target, requestURI)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local target")
-		event := failedEvent(id, req, reqPreview, nil, started, err)
+		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
@@ -307,7 +312,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	outReq, err := http.NewRequest(req.Method, targetURL, req.Body)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local request")
-		event := failedEvent(id, req, reqPreview, nil, started, err)
+		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
@@ -318,18 +323,18 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	resp, err := localHTTPClient.Do(outReq)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "local target unavailable")
-		event := failedEvent(id, req, reqPreview, nil, started, err)
+		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
 	}
 	defer resp.Body.Close()
 
-	respBody, respPreview := wrapBodyForPreview(resp.Header, resp.Body)
+	respBody, respPreview := wrapBodyForPreview(resp.Header, resp.Body, config.PreviewLimit)
 	resp.Body = respBody
 	if err := resp.Write(stream); err != nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		event := failedEvent(id, req, reqPreview, respPreview, started, err)
+		event := failedEvent(id, req, reqPreview, respPreview, started, err, ErrorKindTunnel)
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
@@ -406,7 +411,7 @@ func logRequest(w io.Writer, format LogFormat, event RequestEvent) {
 	_, _ = fmt.Fprintln(w, line)
 }
 
-func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, respPreview *bodyPreviewCapture, started time.Time, err error) RequestEvent {
+func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, respPreview *bodyPreviewCapture, started time.Time, err error, kind ErrorKind) RequestEvent {
 	requestPreview := reqPreview.Preview()
 	requestSize := requestPreview.Size
 	if requestSize == 0 && req.ContentLength > 0 {
@@ -425,6 +430,7 @@ func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, r
 		RequestSize:    requestSize,
 		Duration:       time.Since(started),
 		Error:          err.Error(),
+		ErrorKind:      kind,
 	}
 	if respPreview != nil {
 		responsePreview := respPreview.Preview()

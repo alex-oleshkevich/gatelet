@@ -116,6 +116,192 @@ func TestServerReturnsLocalRedirectWithoutFollowingIt(t *testing.T) {
 	}
 }
 
+func TestServerTracksTunnelCounters(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll local body returned error: %v", err)
+		}
+		if string(body) != "hello" {
+			t.Fatalf("local body = %q, want hello", string(body))
+		}
+		_, _ = w.Write([]byte("local response"))
+	}))
+	defer local.Close()
+
+	var logs lockedBuffer
+	relay, cleanup := startTestTunnelWithLogger(t, local.URL, slog.New(slog.NewTextHandler(&logs, nil)))
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "http://alex.example.test/submit", strings.NewReader("hello"))
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	stats, ok := relay.TunnelStats("alex")
+	if !ok {
+		t.Fatal("TunnelStats returned no stats for alex")
+	}
+	if stats.Requests != 1 {
+		t.Fatalf("Requests = %d, want 1", stats.Requests)
+	}
+	if stats.BytesIn == 0 {
+		t.Fatal("BytesIn = 0, want forwarded request bytes")
+	}
+	if stats.BytesOut != int64(len("local response")) {
+		t.Fatalf("BytesOut = %d, want response body bytes", stats.BytesOut)
+	}
+	if stats.ConnectedAt.IsZero() {
+		t.Fatal("ConnectedAt is zero")
+	}
+	if stats.LastSeen.Before(stats.ConnectedAt) {
+		t.Fatalf("LastSeen = %s before ConnectedAt = %s", stats.LastSeen, stats.ConnectedAt)
+	}
+
+	cleanup()
+	waitForLog(t, &logs, "tunnel disconnected")
+	logText := logs.String()
+	for _, want := range []string{"requests=1", "bytes_in=", "bytes_out=", "last_seen=", "disconnect_reason=session_closed"} {
+		if !strings.Contains(logText, want) {
+			t.Fatalf("disconnect logs missing %q:\n%s", want, logText)
+		}
+	}
+}
+
+func TestServerStatusEndpointReturnsDaemonAndTunnelStats(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("created"))
+	}))
+	defer local.Close()
+
+	relay, cleanup := startTestTunnel(t, local.URL)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "http://alex.example.test/items", strings.NewReader("payload"))
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("forward status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "http://example.test/__gatelet/status", nil)
+	statusReq.Host = "example.test"
+	statusRec := httptest.NewRecorder()
+	relay.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status endpoint code = %d, want %d", statusRec.Code, http.StatusOK)
+	}
+	if got := statusRec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want JSON", got)
+	}
+
+	var status struct {
+		UptimeSeconds int64 `json:"uptime_seconds"`
+		ActiveTunnels int   `json:"active_tunnels"`
+		Totals        struct {
+			Requests uint64 `json:"requests"`
+			BytesIn  int64  `json:"bytes_in"`
+			BytesOut int64  `json:"bytes_out"`
+		} `json:"totals"`
+		Tunnels []struct {
+			Name         string            `json:"name"`
+			Remote       string            `json:"remote"`
+			Requests     uint64            `json:"requests"`
+			BytesIn      int64             `json:"bytes_in"`
+			BytesOut     int64             `json:"bytes_out"`
+			StatusCounts map[string]uint64 `json:"status_counts"`
+			ConnectedAt  string            `json:"connected_at"`
+			LastSeen     string            `json:"last_seen"`
+		} `json:"tunnels"`
+	}
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("status JSON invalid: %v", err)
+	}
+	if status.ActiveTunnels != 1 || len(status.Tunnels) != 1 {
+		t.Fatalf("active tunnels = %d len = %d, want one tunnel", status.ActiveTunnels, len(status.Tunnels))
+	}
+	if status.Totals.Requests != 1 || status.Totals.BytesIn == 0 || status.Totals.BytesOut != int64(len("created")) {
+		t.Fatalf("unexpected totals: %+v", status.Totals)
+	}
+	tunnel := status.Tunnels[0]
+	if tunnel.Name != "alex" || tunnel.Requests != 1 || tunnel.StatusCounts["201"] != 1 {
+		t.Fatalf("unexpected tunnel status: %+v", tunnel)
+	}
+	if tunnel.ConnectedAt == "" || tunnel.LastSeen == "" {
+		t.Fatalf("missing timestamps: %+v", tunnel)
+	}
+}
+
+func TestServerMetricsEndpointReturnsPrometheusMetrics(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("accepted"))
+	}))
+	defer local.Close()
+
+	relay, cleanup := startTestTunnel(t, local.URL)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/metrics-source", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("forward status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+
+	metricsReq := httptest.NewRequest(http.MethodGet, "http://example.test/metrics", nil)
+	metricsReq.Host = "example.test"
+	metricsRec := httptest.NewRecorder()
+	relay.ServeHTTP(metricsRec, metricsReq)
+	if metricsRec.Code != http.StatusOK {
+		t.Fatalf("metrics endpoint code = %d, want %d", metricsRec.Code, http.StatusOK)
+	}
+
+	body := metricsRec.Body.String()
+	for _, want := range []string{
+		`gatelet_active_tunnels 1`,
+		`gatelet_tunnel_requests_total{name="alex",status="202"} 1`,
+		`gatelet_tunnel_request_duration_seconds_bucket{name="alex",le=`,
+		`gatelet_tunnel_bytes_in_total{name="alex"}`,
+		`gatelet_tunnel_bytes_out_total{name="alex"} 8`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestServerAdminEndpointsDoNotOverrideTunnelRoutes(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics" {
+			t.Fatalf("path = %q, want /metrics", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("local metrics"))
+	}))
+	defer local.Close()
+
+	relay, cleanup := startTestTunnel(t, local.URL)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/metrics", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != "local metrics" {
+		t.Fatalf("body = %q, want local metrics", got)
+	}
+}
+
 func TestServerReplacesTunnelAndRoutesToNewClient(t *testing.T) {
 	firstLocal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("first"))
@@ -186,7 +372,7 @@ func TestServerReplacesTunnelAndRoutesToNewClient(t *testing.T) {
 	}
 
 	logText := logs.String()
-	for _, want := range []string{"tunnel replaced", "old_remote=", "new_remote=", "reason=name_reconnect"} {
+	for _, want := range []string{"tunnel replaced", "old_remote=", "new_remote=", "reason=name_reconnect", "old_requests=", "old_bytes_in=", "old_bytes_out=", "old_last_seen="} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("logs missing %q:\n%s", want, logText)
 		}
@@ -263,6 +449,100 @@ func TestClientReportsAuthenticationFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "authentication failed") {
 		t.Fatalf("error = %q, want authentication failure", err.Error())
+	}
+}
+
+func TestServerRejectsDefaultReservedTunnelName(t *testing.T) {
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	err := client.Run(ctx, client.Config{
+		Name:       "admin",
+		ServerAddr: control.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		Token:      "dev-token",
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "tunnel name not allowed") {
+		t.Fatalf("error = %q, want tunnel name not allowed", err.Error())
+	}
+}
+
+func TestServerAllowsAllowlistedTunnelName(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer local.Close()
+
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain:     "example.test",
+		Token:      "dev-token",
+		AllowNames: []string{"alex"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+	go func() {
+		_ = client.Run(ctx, client.Config{
+			Name:       "alex",
+			ServerAddr: control.Addr().String(),
+			Target:     local.URL,
+			Token:      "dev-token",
+		})
+	}()
+
+	waitForTunnel(t, relay, "alex")
+}
+
+func TestServerRejectsNameOutsideAllowlist(t *testing.T) {
+	control := listenLocal(t)
+	defer control.Close()
+
+	relay := New(Config{
+		Domain:     "example.test",
+		Token:      "dev-token",
+		AllowNames: []string{"alex"},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		_ = relay.ServeControl(ctx, control)
+	}()
+
+	err := client.Run(ctx, client.Config{
+		Name:       "mallory",
+		ServerAddr: control.Addr().String(),
+		Target:     "127.0.0.1:3000",
+		Token:      "dev-token",
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "tunnel name not allowed") {
+		t.Fatalf("error = %q, want tunnel name not allowed", err.Error())
 	}
 }
 
@@ -627,6 +907,10 @@ func listenLocal(t *testing.T) net.Listener {
 }
 
 func startTestTunnel(t *testing.T, target string) (*Server, func()) {
+	return startTestTunnelWithLogger(t, target, nil)
+}
+
+func startTestTunnelWithLogger(t *testing.T, target string, logger *slog.Logger) (*Server, func()) {
 	t.Helper()
 
 	control := listenLocal(t)
@@ -635,6 +919,7 @@ func startTestTunnel(t *testing.T, target string) (*Server, func()) {
 		Domain:      "example.test",
 		Token:       "dev-token",
 		ControlAddr: control.Addr().String(),
+		Logger:      logger,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
