@@ -237,6 +237,27 @@ func TestPublicURLDefaultsDomainFromWebSocketServerURL(t *testing.T) {
 	}
 }
 
+func TestDefaultWebSocketControlPath(t *testing.T) {
+	tests := map[string]string{
+		"wss://tun.aresa.me":        "wss://tun.aresa.me/__gatelet/control",
+		"wss://tun.aresa.me/":       "wss://tun.aresa.me/__gatelet/control",
+		"ws://localhost:8080":       "ws://localhost:8080/__gatelet/control",
+		"wss://tun.aresa.me/custom": "wss://tun.aresa.me/custom",
+	}
+
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			got, err := webSocketControlURL(input)
+			if err != nil {
+				t.Fatalf("webSocketControlURL returned error: %v", err)
+			}
+			if got != want {
+				t.Fatalf("webSocketControlURL = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRequestLogLineFormatsText(t *testing.T) {
 	got, err := RequestLogLine(RequestEvent{
 		Method:      http.MethodPost,

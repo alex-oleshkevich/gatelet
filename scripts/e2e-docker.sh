@@ -66,7 +66,7 @@ docker run -d --name "$client" --network "$network" \
   "$image" \
   alex \
   "http://$target:5678" \
-  --server "ws://$daemon:8080/__gatelet/control" \
+  --server "ws://$daemon:8080" \
   --domain e2e.test >/dev/null
 
 wait_for_log "$daemon" "tunnel connected"

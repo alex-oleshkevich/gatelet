@@ -204,6 +204,6 @@ func writeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  --tui                  show the live tunnel dashboard")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Examples:")
-	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server wss://tun.aresa.me/__gatelet/control --token \"$GATELET_TOKEN\"")
+	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server wss://tun.aresa.me --token \"$GATELET_TOKEN\"")
 	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev --control-plaintext --tui")
 }

@@ -141,7 +141,7 @@ Raw TCP control is still available on `--control`, default `:4443`. Add `--contr
 Run `gatelet` on your local machine:
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server wss://example.com/__gatelet/control --token "$GATELET_TOKEN" --token-id current
+gatelet alex http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --token-id current
 ```
 
 The client also reads `GATELET_SERVER`, `GATELET_TOKEN`, and `GATELET_TOKEN_ID` when `--server`, `--token`, or `--token-id` are omitted. If a `wss://` endpoint or raw TLS control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments with raw TCP control and no TLS.
@@ -175,7 +175,7 @@ export GATELET_TOKEN='replace-with-a-long-random-token'
 docker compose -f compose.example.yml up -d --build
 ```
 
-`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. For WebSocket control, point clients at `ws://localhost:8080/__gatelet/control`. For raw TCP control on `4443`, use `--control-plaintext` unless you configure a control TLS certificate.
+`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. For WebSocket control, point clients at `ws://localhost:8080`; the client defaults the path to `/__gatelet/control`. For raw TCP control on `4443`, use `--control-plaintext` unless you configure a control TLS certificate.
 
 For Uncloud, deploy the compose file with `uc` from the host or project where you manage services:
 
@@ -273,14 +273,14 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :8080
 ### `gatelet`
 
 ```sh
-gatelet alex http://127.0.0.1:3000 --server wss://example.com/__gatelet/control --token "$GATELET_TOKEN" --token-id current
+gatelet alex http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --token-id current
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | positional name | Yes | Tunnel name, for example `alex` |
 | `--name` | Alternative | Tunnel name if not using the positional form |
-| `--server` | Alternative | `gateletd` control address or WebSocket URL, for example `wss://example.com/__gatelet/control`; prefer `GATELET_SERVER` for repeated local use |
+| `--server` | Alternative | `gateletd` control address or WebSocket URL, for example `wss://example.com`; WebSocket URLs without a path default to `/__gatelet/control`; prefer `GATELET_SERVER` for repeated local use |
 | positional target | Yes | Local HTTP target, with or without `http://` |
 | `--to` | Alternative | Compatibility alias for the positional target |
 | `--token` | Alternative | Authentication token; prefer `GATELET_TOKEN` in production |

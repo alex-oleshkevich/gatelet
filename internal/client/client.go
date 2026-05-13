@@ -175,6 +175,11 @@ func dialControl(ctx context.Context, config Config) (net.Conn, error) {
 }
 
 func dialWebSocketControl(ctx context.Context, config Config) (net.Conn, error) {
+	controlURL, err := webSocketControlURL(config.ServerAddr)
+	if err != nil {
+		return nil, err
+	}
+
 	options := &websocket.DialOptions{}
 	if strings.HasPrefix(config.ServerAddr, "wss://") {
 		tlsConfig, err := controlTLSConfig(config)
@@ -188,7 +193,7 @@ func dialWebSocketControl(ctx context.Context, config Config) (net.Conn, error) 
 		}
 	}
 
-	conn, resp, err := websocket.Dial(ctx, config.ServerAddr, options)
+	conn, resp, err := websocket.Dial(ctx, controlURL, options)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
@@ -200,6 +205,17 @@ func dialWebSocketControl(ctx context.Context, config Config) (net.Conn, error) 
 
 func isWebSocketControlAddr(addr string) bool {
 	return strings.HasPrefix(addr, "ws://") || strings.HasPrefix(addr, "wss://")
+}
+
+func webSocketControlURL(addr string) (string, error) {
+	parsed, err := url.Parse(addr)
+	if err != nil {
+		return "", err
+	}
+	if parsed.Path == "" || parsed.Path == "/" {
+		parsed.Path = "/__gatelet/control"
+	}
+	return parsed.String(), nil
 }
 
 func controlTLSConfig(config Config) (*tls.Config, error) {
