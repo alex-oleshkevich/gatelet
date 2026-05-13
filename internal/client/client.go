@@ -117,6 +117,10 @@ func Run(ctx context.Context, config Config) error {
 		_ = conn.Close()
 		return fmt.Errorf("read authentication response: %w", err)
 	}
+	if strings.HasPrefix(string(line), "ERR ") {
+		_ = conn.Close()
+		return fmt.Errorf("%s", strings.TrimSpace(string(line)))
+	}
 	if string(line) != protocol.HandshakeOK {
 		_ = conn.Close()
 		return fmt.Errorf("authentication failed")

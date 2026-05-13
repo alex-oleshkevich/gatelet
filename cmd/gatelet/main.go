@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -18,9 +18,18 @@ import (
 )
 
 func main() {
-	config, err := parseConfig(os.Args[1:])
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	config, err := parseConfig(args)
 	if err != nil {
-		log.Fatal(err)
+		if errors.Is(err, flag.ErrHelp) {
+			writeUsage(stdout)
+			return 0
+		}
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -28,25 +37,33 @@ func main() {
 
 	if config.TUI {
 		if err := tui.Run(ctx, config); err != nil {
-			log.Fatal(err)
+			_, _ = fmt.Fprintln(stderr, err)
+			return 1
 		}
-		return
+		return 0
 	}
 
-	writeStartup(os.Stdout, config)
-	config.RequestLog = os.Stdout
+	writeStartup(stdout, config)
+	config.RequestLog = stdout
 	if err := client.Run(ctx, config); err != nil {
-		log.Fatal(err)
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
 	}
+	return 0
 }
 
 func parseConfig(args []string) (client.Config, error) {
 	var config client.Config
 	logFormat := string(client.LogFormatText)
 	controlPlaintext := false
+	positionalTarget := ""
 
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		config.Name = args[0]
+		args = args[1:]
+	}
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		positionalTarget = args[0]
 		args = args[1:]
 	}
 
@@ -86,17 +103,35 @@ func parseConfig(args []string) (client.Config, error) {
 		}
 	}
 
-	if config.Name == "" && flags.NArg() > 0 {
-		config.Name = flags.Arg(0)
+	remaining := flags.Args()
+	if config.Name == "" && len(remaining) > 0 {
+		config.Name = remaining[0]
+		remaining = remaining[1:]
+	}
+	if positionalTarget == "" && len(remaining) > 0 {
+		positionalTarget = remaining[0]
+		remaining = remaining[1:]
+	}
+	if len(remaining) > 0 {
+		return client.Config{}, fmt.Errorf("unexpected positional argument %q", remaining[0])
 	}
 	if config.Name == "" {
 		return client.Config{}, fmt.Errorf("--name or positional name is required")
 	}
 	if config.ServerAddr == "" {
-		return client.Config{}, fmt.Errorf("--server is required")
+		config.ServerAddr = os.Getenv("GATELET_SERVER")
+	}
+	if config.ServerAddr == "" {
+		return client.Config{}, fmt.Errorf("--server or GATELET_SERVER is required")
+	}
+	if config.Target != "" && positionalTarget != "" && config.Target != positionalTarget {
+		return client.Config{}, fmt.Errorf("target specified both positionally and with --to")
 	}
 	if config.Target == "" {
-		return client.Config{}, fmt.Errorf("--to is required")
+		config.Target = positionalTarget
+	}
+	if config.Target == "" {
+		return client.Config{}, fmt.Errorf("target positional argument or --to is required")
 	}
 	if config.PreviewLimit < 0 {
 		return client.Config{}, fmt.Errorf("--preview-size must be non-negative")
@@ -140,4 +175,35 @@ type startupLogRecord struct {
 	URL       string `json:"url"`
 	Target    string `json:"target"`
 	LogFormat string `json:"log_format"`
+}
+
+func writeUsage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "Usage: gatelet <name> <target> --server <addr> [flags]")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Expose a local HTTP service through a gateletd relay.")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Required:")
+	_, _ = fmt.Fprintln(w, "  <name>                 public tunnel name, for example alex")
+	_, _ = fmt.Fprintln(w, "  <target>               local HTTP target, for example http://127.0.0.1:3000")
+	_, _ = fmt.Fprintln(w, "  --server <addr>        gateletd control address, or set GATELET_SERVER")
+	_, _ = fmt.Fprintln(w, "  --token <token>        shared tunnel token, or set GATELET_TOKEN")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Flags:")
+	_, _ = fmt.Fprintln(w, "  --name <name>          tunnel name when not using the positional form")
+	_, _ = fmt.Fprintln(w, "  --to <url>             compatibility alias for the positional target")
+	_, _ = fmt.Fprintln(w, "  --token-id <id>        token ID for daemon-side rotation")
+	_, _ = fmt.Fprintln(w, "  --domain <domain>      public tunnel domain shown in startup output")
+	_, _ = fmt.Fprintln(w, "  --log-format <format>  request log format: text, json, or jsonl")
+	_, _ = fmt.Fprintln(w, "  --preview-size <bytes> request/response body preview cap")
+	_, _ = fmt.Fprintln(w, "  --control-plaintext    disable TLS for local development control connections")
+	_, _ = fmt.Fprintln(w, "  --control-ca <path>    CA bundle for verifying the control server")
+	_, _ = fmt.Fprintln(w, "  --control-server-name <name>")
+	_, _ = fmt.Fprintln(w, "                         TLS server name override")
+	_, _ = fmt.Fprintln(w, "  --control-insecure-skip-verify")
+	_, _ = fmt.Fprintln(w, "                         use TLS without certificate verification")
+	_, _ = fmt.Fprintln(w, "  --tui                  show the live tunnel dashboard")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Examples:")
+	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server tun.aresa.me:4443 --token \"$GATELET_TOKEN\"")
+	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev --control-plaintext --tui")
 }

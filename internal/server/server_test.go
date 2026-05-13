@@ -302,7 +302,7 @@ func TestServerAdminEndpointsDoNotOverrideTunnelRoutes(t *testing.T) {
 	}
 }
 
-func TestServerReplacesTunnelAndRoutesToNewClient(t *testing.T) {
+func TestServerRejectsDuplicateTunnelNameAndKeepsFirstClient(t *testing.T) {
 	firstLocal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("first"))
 	}))
@@ -338,23 +338,33 @@ func TestServerReplacesTunnelAndRoutesToNewClient(t *testing.T) {
 	}()
 	waitForTunnel(t, relay, "alex")
 
+	secondDone := make(chan error, 1)
 	go func() {
-		_ = client.Run(ctx, client.Config{
+		secondDone <- client.Run(ctx, client.Config{
 			Name:       "alex",
 			ServerAddr: control.Addr().String(),
 			Target:     secondLocal.URL,
 			Token:      "dev-token",
 		})
 	}()
-	waitForLog(t, &logs, "tunnel replaced")
+	waitForLog(t, &logs, "duplicate tunnel name rejected")
+
+	select {
+	case err := <-secondDone:
+		if err == nil {
+			t.Fatal("second client returned nil error")
+		}
+		if !strings.Contains(err.Error(), "tunnel name already in use") {
+			t.Fatalf("second client error = %q, want duplicate-name error", err.Error())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second client did not return duplicate-name error")
+	}
 
 	select {
 	case err := <-firstDone:
-		if err != nil {
-			t.Fatalf("first client returned error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("first client stayed connected after replacement")
+		t.Fatalf("first client disconnected after duplicate registration: %v", err)
+	default:
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/", nil)
@@ -367,12 +377,12 @@ func TestServerReplacesTunnelAndRoutesToNewClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll returned error: %v", err)
 	}
-	if string(body) != "second" {
-		t.Fatalf("body = %q, want second client", string(body))
+	if string(body) != "first" {
+		t.Fatalf("body = %q, want first client", string(body))
 	}
 
 	logText := logs.String()
-	for _, want := range []string{"tunnel replaced", "old_remote=", "new_remote=", "reason=name_reconnect", "old_requests=", "old_bytes_in=", "old_bytes_out=", "old_last_seen="} {
+	for _, want := range []string{"duplicate tunnel name rejected", "name=alex", "active_remote=", "duplicate_remote="} {
 		if !strings.Contains(logText, want) {
 			t.Fatalf("logs missing %q:\n%s", want, logText)
 		}

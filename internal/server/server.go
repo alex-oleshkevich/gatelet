@@ -59,6 +59,7 @@ type Server struct {
 
 	mu       sync.RWMutex
 	sessions map[string]*tunnelSession
+	pending  map[string]string
 }
 
 type tunnelSession struct {
@@ -124,6 +125,7 @@ func New(config Config) *Server {
 		heartbeatInterval: config.HeartbeatInterval,
 		heartbeatTimeout:  config.HeartbeatTimeout,
 		sessions:          make(map[string]*tunnelSession),
+		pending:           make(map[string]string),
 	}
 }
 
@@ -356,8 +358,14 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		return
 	}
 	s.logger.Info("authentication succeeded", "name", hello.Name, "remote", remote, "token_id", tokenID)
+	if !s.reserveName(hello.Name, remote) {
+		_, _ = conn.Write([]byte(protocol.HandshakeNameInUse))
+		_ = conn.Close()
+		return
+	}
 	if _, err := conn.Write([]byte(protocol.HandshakeOK)); err != nil {
 		s.logger.Warn("send auth ok failed", "name", hello.Name, "remote", remote, "error", err)
+		s.releaseReservation(hello.Name, remote)
 		_ = conn.Close()
 		return
 	}
@@ -368,6 +376,7 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	session, err := yamux.Server(conn, yamuxConfig(s.heartbeatInterval, s.heartbeatTimeout))
 	if err != nil {
 		s.logger.Error("start tunnel session failed", "name", hello.Name, "remote", remote, "error", err)
+		s.releaseReservation(hello.Name, remote)
 		_ = conn.Close()
 		return
 	}
@@ -375,6 +384,32 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	s.register(hello.Name, session, remote)
 	<-session.CloseChan()
 	s.unregister(hello.Name, session, remote)
+}
+
+func (s *Server) reserveName(name string, remote string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existing := s.sessions[name]; existing != nil && !existing.session.IsClosed() {
+		s.logger.Warn("duplicate tunnel name rejected", "name", name, "active_remote", existing.remote, "duplicate_remote", remote)
+		return false
+	}
+	if activeRemote, ok := s.pending[name]; ok {
+		s.logger.Warn("duplicate tunnel name rejected", "name", name, "active_remote", activeRemote, "duplicate_remote", remote)
+		return false
+	}
+
+	s.pending[name] = remote
+	return true
+}
+
+func (s *Server) releaseReservation(name string, remote string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.pending[name] == remote {
+		delete(s.pending, name)
+	}
 }
 
 func (s *Server) register(name string, session *yamux.Session, remote string) {
@@ -389,29 +424,11 @@ func (s *Server) register(name string, session *yamux.Session, remote string) {
 	}
 
 	s.mu.Lock()
-	old := s.sessions[name]
+	delete(s.pending, name)
 	s.sessions[name] = record
 	s.mu.Unlock()
 
-	if old != nil {
-		oldStats := old.stats(name)
-		s.logger.Info(
-			"tunnel replaced",
-			"name", name,
-			"url", "https://"+name+"."+s.domain,
-			"old_remote", old.remote,
-			"new_remote", remote,
-			"reason", "name_reconnect",
-			"old_requests", oldStats.Requests,
-			"old_bytes_in", oldStats.BytesIn,
-			"old_bytes_out", oldStats.BytesOut,
-			"old_connected_at", oldStats.ConnectedAt,
-			"old_last_seen", oldStats.LastSeen,
-		)
-		_ = old.session.Close()
-	} else {
-		s.logger.Info("tunnel connected", "name", name, "url", "https://"+name+"."+s.domain, "remote", remote, "connected_at", now)
-	}
+	s.logger.Info("tunnel connected", "name", name, "url", "https://"+name+"."+s.domain, "remote", remote, "connected_at", now)
 }
 
 func (s *Server) unregister(name string, session *yamux.Session, remote string) {

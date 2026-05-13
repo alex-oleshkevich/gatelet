@@ -86,7 +86,7 @@ gateletd --domain example.test --http 127.0.0.1:8080 --control 127.0.0.1:4443 --
 Start the tunnel client:
 
 ```sh
-gatelet alex --server 127.0.0.1:4443 --to http://127.0.0.1:3000 --token dev-token --control-plaintext
+gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext
 ```
 
 Plain client mode prints one line for each completed or failed incoming request:
@@ -103,7 +103,7 @@ Use `--log-format jsonl` or `--log-format json` when piping request summaries in
 For an interactive local dashboard, add `--tui`:
 
 ```sh
-gatelet alex --server 127.0.0.1:4443 --to http://127.0.0.1:3000 --token dev-token --control-plaintext --tui
+gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext --tui
 ```
 
 Send a request through the relay:
@@ -142,10 +142,10 @@ Add `--control-tls-cert` and `--control-tls-key` for production control-channel 
 Run `gatelet` on your local machine:
 
 ```sh
-gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN" --token-id current
+gatelet alex http://127.0.0.1:3000 --server relay.example.com:4443 --token "$GATELET_TOKEN" --token-id current
 ```
 
-The client also reads `GATELET_TOKEN` and `GATELET_TOKEN_ID` when `--token` or `--token-id` are omitted. If the control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments without control TLS.
+The client also reads `GATELET_SERVER`, `GATELET_TOKEN`, and `GATELET_TOKEN_ID` when `--server`, `--token`, or `--token-id` are omitted. If the control listener uses a private CA or self-signed certificate, pass `--control-ca /path/to/ca.pem`. Use `--control-plaintext` only for trusted local networks or development deployments without control TLS.
 
 Then open:
 
@@ -273,15 +273,16 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :80 --contro
 ### `gatelet`
 
 ```sh
-gatelet alex --server relay.example.com:4443 --to http://127.0.0.1:3000 --token "$GATELET_TOKEN" --token-id current
+gatelet alex http://127.0.0.1:3000 --server relay.example.com:4443 --token "$GATELET_TOKEN" --token-id current
 ```
 
 | Flag | Required | Description |
 |---|---|---|
 | positional name | Yes | Tunnel name, for example `alex` |
 | `--name` | Alternative | Tunnel name if not using the positional form |
-| `--server` | Yes | `gateletd` control address |
-| `--to` | Yes | Local HTTP target, with or without `http://` |
+| `--server` | Alternative | `gateletd` control address; prefer `GATELET_SERVER` for repeated local use |
+| positional target | Yes | Local HTTP target, with or without `http://` |
+| `--to` | Alternative | Compatibility alias for the positional target |
 | `--token` | Alternative | Authentication token; prefer `GATELET_TOKEN` in production |
 | `--token-id` | No | Token ID sent in the auth handshake; defaults to `default` when omitted |
 | `--domain` | No | Public tunnel domain for display, inferred from `--server` when empty |
@@ -301,7 +302,7 @@ List filters split on spaces and AND every term across method, path, status, rem
 
 `gateletd` writes structured logs for startup, control connections, protocol/client versions, authentication, tunnel lifecycle, incoming requests, tunnel misses, forwards, statuses, durations, byte counts, and forwarding errors. Use `--log-format json` for JSON slog records.
 
-Tunnel lifecycle logs include `connected_at`, `last_seen`, request count, forwarded request bytes, response body bytes, and disconnect reason. Replacement logs also include the replaced tunnel's counters so reconnects are visible without waiting for the old session cleanup.
+Tunnel lifecycle logs include `connected_at`, `last_seen`, request count, forwarded request bytes, response body bytes, and disconnect reason. Duplicate tunnel registration attempts are rejected with `ERR tunnel name already in use` and logged with the active and duplicate remote addresses.
 
 `gateletd` exposes daemon-only admin endpoints on the base domain, not on tunnel subdomains:
 
@@ -317,7 +318,7 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 ## Operational Notes
 
 - `gateletd` keeps tunnel registrations in memory. Restarting the relay disconnects active tunnels.
-- If a second client registers the same name, it atomically replaces the previous tunnel. The old control session is closed and `gateletd` logs the tunnel name plus old and new remote addresses.
+- If a second client registers the same name while the first tunnel is active, `gateletd` rejects the second client and keeps the existing tunnel connected.
 - Requests for unknown tunnel names return `404`.
 - Reserved tunnel names are rejected during control handshake. `admin`, `www`, `api`, and `metrics` are reserved by default.
 - Broken or unavailable tunnels return `502`.

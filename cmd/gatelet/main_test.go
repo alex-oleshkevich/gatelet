@@ -39,6 +39,52 @@ func TestParseConfigAcceptsNameBeforeFlags(t *testing.T) {
 	}
 }
 
+func TestParseConfigAcceptsNameAndTargetBeforeFlags(t *testing.T) {
+	config, err := parseConfig([]string{
+		"alex",
+		"http://127.0.0.1:3000",
+		"--server", "127.0.0.1:4443",
+		"--token", "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.Name != "alex" {
+		t.Fatalf("Name = %q, want alex", config.Name)
+	}
+	if config.Target != "http://127.0.0.1:3000" {
+		t.Fatalf("Target = %q, want http://127.0.0.1:3000", config.Target)
+	}
+}
+
+func TestParseConfigAcceptsTargetAfterFlags(t *testing.T) {
+	config, err := parseConfig([]string{
+		"alex",
+		"--server", "127.0.0.1:4443",
+		"--token", "dev-token",
+		"http://127.0.0.1:3000",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.Target != "http://127.0.0.1:3000" {
+		t.Fatalf("Target = %q, want http://127.0.0.1:3000", config.Target)
+	}
+}
+
+func TestParseConfigRejectsConflictingTargetValues(t *testing.T) {
+	_, err := parseConfig([]string{
+		"alex",
+		"http://127.0.0.1:3000",
+		"--server", "127.0.0.1:4443",
+		"--to", "http://127.0.0.1:9090",
+		"--token", "dev-token",
+	})
+	if err == nil {
+		t.Fatal("parseConfig returned nil error")
+	}
+}
+
 func TestParseConfigAcceptsTokenFromEnvironment(t *testing.T) {
 	t.Setenv("GATELET_TOKEN", "env-token")
 
@@ -52,6 +98,56 @@ func TestParseConfigAcceptsTokenFromEnvironment(t *testing.T) {
 	}
 	if config.Token != "env-token" {
 		t.Fatalf("Token = %q, want env-token", config.Token)
+	}
+}
+
+func TestParseConfigAcceptsServerFromEnvironment(t *testing.T) {
+	t.Setenv("GATELET_SERVER", "env.example.test:4443")
+
+	config, err := parseConfig([]string{
+		"alex",
+		"--to", "127.0.0.1:3000",
+		"--token", "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.ServerAddr != "env.example.test:4443" {
+		t.Fatalf("ServerAddr = %q, want env.example.test:4443", config.ServerAddr)
+	}
+}
+
+func TestParseConfigServerFlagOverridesEnvironment(t *testing.T) {
+	t.Setenv("GATELET_SERVER", "env.example.test:4443")
+
+	config, err := parseConfig([]string{
+		"alex",
+		"--server", "flag.example.test:4443",
+		"--to", "127.0.0.1:3000",
+		"--token", "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.ServerAddr != "flag.example.test:4443" {
+		t.Fatalf("ServerAddr = %q, want flag.example.test:4443", config.ServerAddr)
+	}
+}
+
+func TestParseConfigTokenFlagOverridesEnvironment(t *testing.T) {
+	t.Setenv("GATELET_TOKEN", "env-token")
+
+	config, err := parseConfig([]string{
+		"alex",
+		"--server", "127.0.0.1:4443",
+		"--to", "127.0.0.1:3000",
+		"--token", "flag-token",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.Token != "flag-token" {
+		t.Fatalf("Token = %q, want flag-token", config.Token)
 	}
 }
 
@@ -198,5 +294,35 @@ func TestWriteStartupJSON(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("startup JSON %q does not contain %s", got, want)
 		}
+	}
+}
+
+func TestRunHelpPrintsUsageAndSucceeds(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+
+	got := stdout.String()
+	for _, want := range []string{
+		"Usage: gatelet <name> <target> --server <addr> [flags]",
+		"<target>",
+		"--server",
+		"--to",
+		"--token",
+		"--tui",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help output %q does not contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "flag: help requested") {
+		t.Fatalf("help output contains fatal flag error: %q", got)
 	}
 }
