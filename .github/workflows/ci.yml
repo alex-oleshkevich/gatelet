@@ -43,6 +43,9 @@ jobs:
       - name: Lint
         run: golangci-lint run
 
+      - name: Validate AUR PKGBUILD renderer
+        run: scripts/render-aur-pkgbuild.sh 0.1.0 0000000000000000000000000000000000000000000000000000000000000000 >/tmp/PKGBUILD
+
   e2e:
     name: Docker E2E
     runs-on: ubuntu-latest

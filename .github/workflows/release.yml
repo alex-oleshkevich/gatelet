@@ -42,3 +42,124 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  aur:
+    name: Publish AUR package
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      AUR_PKG: gatelet-bin
+      AUR_REMOTE: ssh://aur@aur.archlinux.org/gatelet-bin.git
+      AUR_KEY_SET: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
+    steps:
+      - name: Install publish dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            github-cli \
+            openssh
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trust checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Skip prerelease tags
+        if: contains(github.ref_name, '-')
+        run: echo "Skipping AUR publish for prerelease tag $GITHUB_REF_NAME"
+
+      - name: Download release checksums
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern checksums.txt \
+            --dir dist \
+            --clobber
+
+      - name: Resolve Linux x86_64 checksum
+        if: ${{ !contains(github.ref_name, '-') }}
+        id: checksum
+        run: |
+          asset="gatelet_linux_amd64.tar.gz"
+          checksum=""
+          while read -r sum file; do
+            if [[ "$file" == "$asset" ]]; then
+              checksum="$sum"
+              break
+            fi
+          done < dist/checksums.txt
+          if [[ -z "$checksum" ]]; then
+            echo "checksum for $asset not found in dist/checksums.txt" >&2
+            exit 1
+          fi
+          echo "sha256=$checksum" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AUR SSH
+        if: ${{ !contains(github.ref_name, '-') && env.ACT != 'true' && env.AUR_KEY_SET == 'true' }}
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          ssh-keyscan -H aur.archlinux.org > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          ssh -i "$HOME/.ssh/aur" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            aur@aur.archlinux.org help >/dev/null 2>&1
+
+      - name: Publish AUR package
+        if: ${{ !contains(github.ref_name, '-') && env.ACT != 'true' && env.AUR_KEY_SET == 'true' }}
+        run: |
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          version="${GITHUB_REF_NAME#v}"
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          if git ls-remote "$AUR_REMOTE" HEAD >/dev/null 2>&1; then
+            git clone "$AUR_REMOTE" "$tmpdir"
+          else
+            git init "$tmpdir"
+            cd "$tmpdir"
+            git remote add origin "$AUR_REMOTE"
+            git checkout -B master
+            cd "$GITHUB_WORKSPACE"
+          fi
+          scripts/render-aur-pkgbuild.sh "$version" "${{ steps.checksum.outputs.sha256 }}" > "$tmpdir/PKGBUILD"
+          cd "$tmpdir"
+          useradd -m builder
+          chown -R builder:builder "$tmpdir"
+          git config --global --add safe.directory "$tmpdir"
+          runuser -u builder -- makepkg --printsrcinfo > .SRCINFO
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR package $AUR_PKG already up to date"
+          else
+            git commit -m "Release $version"
+            git push origin master
+          fi
+
+      - name: Skip AUR publish
+        if: ${{ !contains(github.ref_name, '-') && env.ACT != 'true' && env.AUR_KEY_SET != 'true' }}
+        run: echo "AUR_SSH_PRIVATE_KEY is not configured; AUR publish skipped."
+
+      - name: Render AUR metadata for act
+        if: ${{ !contains(github.ref_name, '-') && env.ACT == 'true' }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          scripts/render-aur-pkgbuild.sh "$version" "${{ steps.checksum.outputs.sha256 }}" > "$tmpdir/PKGBUILD"
+          useradd -m builder
+          chown -R builder:builder "$tmpdir"
+          runuser -u builder -- bash -c 'cd "$1" && makepkg --printsrcinfo' bash "$tmpdir" > dist/.SRCINFO
+          cp "$tmpdir/PKGBUILD" dist/PKGBUILD
+          test -s dist/.SRCINFO

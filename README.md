@@ -69,6 +69,16 @@ tar -xzf gatelet_linux_amd64.tar.gz
 
 Release archives include both binaries and `README.md`. Verify downloads with the `checksums.txt` file attached to each GitHub release.
 
+## Arch Linux
+
+On Arch Linux, install the binary package from the AUR:
+
+```sh
+yay -S gatelet-bin
+```
+
+The package installs both `gatelet` and `gateletd`. TUI copy helpers use the system clipboard; install `wl-clipboard` on Wayland if copy commands do not work.
+
 ## Local Smoke Test
 
 Start a local web service:
@@ -191,6 +201,37 @@ The ignored `compose.yml` uses Uncloud `x-ports`. In Uncloud, public HTTPS traff
 | `tun.aresa.me/__gatelet/control` | `8080` | WebSocket client control connection |
 | `4443/tcp@host` | `4443` | Optional raw TCP client control connection |
 
+### Caddy and Uncloud Quirks
+
+Gatelet works best behind Uncloud's Caddy-managed HTTPS routing. The daemon listens on plain HTTP inside the container, and Caddy owns public TLS on `80` and `443`.
+
+Use both the base host and wildcard host in the Gatelet service:
+
+```yaml
+services:
+  gateletd:
+    x-ports:
+      - "tun.aresa.me:8080/https"
+      - "*.tun.aresa.me:8080/https"
+      - "4443:4443/tcp@host"
+```
+
+The base host is required for WebSocket control at `wss://tun.aresa.me/__gatelet/control`. The wildcard host is required for tunnel traffic such as `https://alex.tun.aresa.me`. If one of those hosts is missing, clients can fail with TLS errors such as `tls: internal error` before the request reaches `gateletd`.
+
+Do not mix Docker Compose `ports` and Uncloud `x-ports` on the same service. Uncloud rejects a service that specifies both. For local Docker Compose, use `compose.example.yml`; for Uncloud deployment, use an ignored deployment-specific `compose.yml` with `x-ports`.
+
+Do not bind `80:80` or `443:443` from the Gatelet service when Uncloud Caddy is running. Those host ports belong to Caddy. If you need raw TCP control, expose only `4443:4443/tcp@host`; otherwise prefer WebSocket control over `443` and omit the raw control port.
+
+When using Uncloud's shared Caddy service with Cloudflare DNS challenges, the Caddy app needs the Cloudflare-enabled image and a global Caddyfile like:
+
+```caddyfile
+{
+	acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+}
+```
+
+Keep `CLOUDFLARE_API_TOKEN` in the Caddy app environment, not in the Gatelet container. The token only needs permission to manage DNS records for certificate issuance.
+
 ## DNS Setup
 
 Create wildcard DNS records that point at the public server:
@@ -206,17 +247,17 @@ For `tun.aresa.me` on Cloudflare, create records in the `aresa.me` zone:
 
 | Type | Name | Content | Proxy status |
 |---|---|---|---|
-| `A` or `AAAA` | `tun` | Public server IP | DNS only |
-| `A` or `AAAA` | `*.tun` | Public server IP | DNS only |
+| `A` or `AAAA` | `tun` | Public server IP | Proxied for WebSocket-only control; DNS only if exposing raw `4443` |
+| `A` or `AAAA` | `*.tun` | Public server IP | Proxied for HTTPS tunnels; DNS only if bypassing Cloudflare |
 
 If Uncloud gives you a hostname instead of a stable IP address, use `CNAME` records instead:
 
 | Type | Name | Content | Proxy status |
 |---|---|---|---|
-| `CNAME` | `tun` | Uncloud hostname | DNS only |
-| `CNAME` | `*.tun` | Uncloud hostname | DNS only |
+| `CNAME` | `tun` | Uncloud hostname | Proxied for WebSocket-only control; DNS only if exposing raw `4443` |
+| `CNAME` | `*.tun` | Uncloud hostname | Proxied for HTTPS tunnels; DNS only if bypassing Cloudflare |
 
-With WebSocket control, Cloudflare can proxy normal HTTPS/WebSocket traffic on port `443` to your reverse proxy. Raw TCP control on `4443` still requires DNS-only, Cloudflare Spectrum, Cloudflare Tunnel, or another TCP proxy.
+With WebSocket control, Cloudflare can proxy normal HTTPS/WebSocket traffic on port `443` to your reverse proxy. Raw TCP control on `4443` is not handled by the standard Cloudflare HTTP proxy; it requires DNS-only, Cloudflare Spectrum, Cloudflare Tunnel, or another TCP proxy.
 
 Cloudflare dashboard path:
 
@@ -369,7 +410,9 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-GoReleaser builds `gatelet` and `gateletd`, creates Linux and macOS archives, writes checksums, and publishes the GitHub release.
+GoReleaser builds `gatelet` and `gateletd`, creates Linux and macOS archives, writes checksums, and publishes the GitHub release. Stable release tags also publish the `gatelet-bin` AUR package from the Linux amd64 archive. Prerelease tags are skipped for AUR because Arch `pkgver` values cannot contain hyphens.
+
+The AUR publish job requires a GitHub Actions secret named `AUR_SSH_PRIVATE_KEY`. The matching public key must be added to the maintainer's AUR account and allowed to push `ssh://aur@aur.archlinux.org/gatelet-bin.git`.
 
 ## Limitations
 
