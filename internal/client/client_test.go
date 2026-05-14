@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"gatelet/internal/protocol"
 )
 
@@ -358,6 +360,56 @@ func TestDefaultWebSocketControlPath(t *testing.T) {
 				t.Fatalf("webSocketControlURL = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestDialWebSocketControlSurvivesCanceledDialContext(t *testing.T) {
+	received := make(chan string, 1)
+	serverErr := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+
+		netConn := websocket.NetConn(context.Background(), conn, websocket.MessageBinary)
+		defer netConn.Close()
+
+		buf := make([]byte, 4)
+		n, err := netConn.Read(buf)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		received <- string(buf[:n])
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	conn, err := dialWebSocketControl(ctx, Config{
+		ServerAddr: "ws://" + strings.TrimPrefix(server.URL, "http://"),
+	})
+	if err != nil {
+		t.Fatalf("dialWebSocketControl returned error: %v", err)
+	}
+	defer conn.Close()
+
+	cancel()
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("Write after dial context cancel returned error: %v", err)
+	}
+
+	select {
+	case got := <-received:
+		if got != "ping" {
+			t.Fatalf("server received %q, want ping", got)
+		}
+	case err := <-serverErr:
+		t.Fatalf("server returned error: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for server to receive ping")
 	}
 }
 

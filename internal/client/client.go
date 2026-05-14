@@ -343,7 +343,7 @@ func dialWebSocketControl(ctx context.Context, config Config) (net.Conn, error) 
 	if err != nil {
 		return nil, err
 	}
-	return websocket.NetConn(ctx, conn, websocket.MessageBinary), nil
+	return websocket.NetConn(context.Background(), conn, websocket.MessageBinary), nil
 }
 
 func isWebSocketControlAddr(addr string) bool {

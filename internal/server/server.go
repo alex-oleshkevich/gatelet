@@ -352,7 +352,7 @@ func (s *Server) serveWebSocketControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.logger.Info("websocket control connection accepted", "host", r.Host, "remote", r.RemoteAddr)
-	s.handleControlConn(websocket.NetConn(r.Context(), conn, websocket.MessageBinary))
+	s.handleControlConn(websocket.NetConn(context.Background(), conn, websocket.MessageBinary))
 }
 
 func (s *Server) handleControlConn(conn net.Conn) {
