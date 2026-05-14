@@ -87,19 +87,6 @@ func TestParseClientHelloValidatesName(t *testing.T) {
 	}
 }
 
-func TestParseClientHelloAcceptsTCPTunnel(t *testing.T) {
-	hello, err := ParseClientHello([]byte(`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp","remote_port":15432}`))
-	if err != nil {
-		t.Fatalf("ParseClientHello returned error: %v", err)
-	}
-	if hello.TunnelType != TunnelTypeTCP {
-		t.Fatalf("TunnelType = %q, want %q", hello.TunnelType, TunnelTypeTCP)
-	}
-	if hello.RemotePort != 15432 {
-		t.Fatalf("RemotePort = %d, want 15432", hello.RemotePort)
-	}
-}
-
 func TestParseClientHelloAcceptsHTTPBasicAuth(t *testing.T) {
 	hello, err := ParseClientHello([]byte(`{"name":"alex","protocol_version":2,"client_version":"gatelet-test","tunnel_type":"http","http_basic_auth":{"username":"operator","password":"secret"}}`))
 	if err != nil {
@@ -110,13 +97,6 @@ func TestParseClientHelloAcceptsHTTPBasicAuth(t *testing.T) {
 	}
 	if hello.HTTPBasicAuth.Username != "operator" || hello.HTTPBasicAuth.Password != "secret" {
 		t.Fatalf("HTTPBasicAuth = %+v, want configured credentials", hello.HTTPBasicAuth)
-	}
-}
-
-func TestParseClientHelloRejectsHTTPBasicAuthForTCP(t *testing.T) {
-	_, err := ParseClientHello([]byte(`{"name":"pg","protocol_version":2,"client_version":"gatelet-test","tunnel_type":"tcp","remote_port":15432,"http_basic_auth":{"username":"operator","password":"secret"}}`))
-	if err == nil {
-		t.Fatal("ParseClientHello returned nil error")
 	}
 }
 
@@ -133,12 +113,10 @@ func TestParseClientHelloRejectsIncompleteHTTPBasicAuth(t *testing.T) {
 	}
 }
 
-func TestParseClientHelloRejectsInvalidTCPTunnel(t *testing.T) {
+func TestParseClientHelloRejectsUnsupportedTunnelType(t *testing.T) {
 	tests := []string{
-		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp"}`,
-		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp","remote_port":70000}`,
-		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"http","remote_port":15432}`,
-		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"udp","remote_port":15432}`,
+		`{"name":"pg","protocol_version":2,"client_version":"gatelet-test","tunnel_type":"tcp"}`,
+		`{"name":"pg","protocol_version":3,"client_version":"gatelet-test","tunnel_type":"udp"}`,
 	}
 
 	for _, input := range tests {

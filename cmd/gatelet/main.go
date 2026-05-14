@@ -79,8 +79,6 @@ func parseConfig(args []string) (client.Config, error) {
 	flags.StringVar(&config.Domain, "domain", "", "public tunnel domain, inferred from --server when empty")
 	flags.StringVar(&logFormat, "log-format", logFormat, "plain-mode request log format: text, json, or jsonl")
 	flags.IntVar(&config.PreviewLimit, "preview-size", 0, "maximum request/response body preview bytes captured for TUI and logs")
-	flags.BoolVar(&config.TCP, "tcp", false, "forward raw TCP instead of HTTP")
-	flags.IntVar(&config.RemotePort, "remote-port", 0, "public TCP port for --tcp tunnels")
 	flags.StringVar(&basicAuth, "basic-auth", "", "protect HTTP tunnel with Basic Auth credentials as user:password")
 	flags.BoolVar(&controlPlaintext, "control-plaintext", controlPlaintext, "disable TLS for the control connection")
 	flags.StringVar(&config.ControlCACertFile, "control-ca", "", "PEM CA bundle for verifying the control server")
@@ -141,15 +139,6 @@ func parseConfig(args []string) (client.Config, error) {
 	if config.PreviewLimit < 0 {
 		return client.Config{}, fmt.Errorf("--preview-size must be non-negative")
 	}
-	if config.RemotePort < 0 || config.RemotePort > 65535 {
-		return client.Config{}, fmt.Errorf("--remote-port must be between 1 and 65535")
-	}
-	if config.TCP && config.RemotePort == 0 {
-		return client.Config{}, fmt.Errorf("--remote-port is required with --tcp")
-	}
-	if !config.TCP && config.RemotePort != 0 {
-		return client.Config{}, fmt.Errorf("--remote-port requires --tcp")
-	}
 	if config.Token == "" {
 		config.Token = os.Getenv("GATELET_TOKEN")
 	}
@@ -170,9 +159,6 @@ func parseConfig(args []string) (client.Config, error) {
 		if err != nil {
 			return client.Config{}, err
 		}
-		if config.TCP {
-			return client.Config{}, fmt.Errorf("--basic-auth/GATELET_BASIC_AUTH requires an HTTP tunnel")
-		}
 		config.HTTPBasicAuthUser = user
 		config.HTTPBasicAuthPassword = password
 	}
@@ -190,9 +176,6 @@ func parseBasicAuthSpec(value string) (string, string, error) {
 
 func writeStartup(w io.Writer, config client.Config) {
 	url := client.PublicURL(config.Name, config.Domain, config.ServerAddr)
-	if config.TCP {
-		url = client.PublicTCPURL(config.Name, config.Domain, config.ServerAddr, config.RemotePort)
-	}
 	switch config.LogFormat {
 	case client.LogFormatJSON, client.LogFormatJSONL:
 		data, err := json.Marshal(startupLogRecord{
@@ -219,11 +202,11 @@ type startupLogRecord struct {
 func writeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "Usage: gatelet <name> <target> --server <addr> [flags]")
 	_, _ = fmt.Fprintln(w)
-	_, _ = fmt.Fprintln(w, "Expose a local HTTP or TCP service through a gateletd relay.")
+	_, _ = fmt.Fprintln(w, "Expose a local HTTP service through a gateletd relay.")
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Required:")
 	_, _ = fmt.Fprintln(w, "  <name>                 public tunnel name, for example alex")
-	_, _ = fmt.Fprintln(w, "  <target>               local target, for example http://127.0.0.1:3000 or localhost:5432")
+	_, _ = fmt.Fprintln(w, "  <target>               local HTTP target, for example http://127.0.0.1:3000")
 	_, _ = fmt.Fprintln(w, "  --server <addr>        gateletd control address or ws(s) URL, or set GATELET_SERVER")
 	_, _ = fmt.Fprintln(w, "  --token <token>        shared tunnel token, or set GATELET_TOKEN")
 	_, _ = fmt.Fprintln(w)
@@ -234,10 +217,8 @@ func writeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  --domain <domain>      public tunnel domain shown in startup output")
 	_, _ = fmt.Fprintln(w, "  --log-format <format>  request log format: text, json, or jsonl")
 	_, _ = fmt.Fprintln(w, "  --preview-size <bytes> request/response body preview cap")
-	_, _ = fmt.Fprintln(w, "  --tcp                  forward raw TCP instead of HTTP")
-	_, _ = fmt.Fprintln(w, "  --remote-port <port>   public TCP port for --tcp tunnels")
 	_, _ = fmt.Fprintln(w, "  --basic-auth <u:p>     require HTTP Basic Auth before forwarding")
-	_, _ = fmt.Fprintln(w, "  --control-plaintext    disable TLS for raw TCP development control connections")
+	_, _ = fmt.Fprintln(w, "  --control-plaintext    disable TLS for development control connections")
 	_, _ = fmt.Fprintln(w, "  --control-ca <path>    CA bundle for verifying the control server")
 	_, _ = fmt.Fprintln(w, "  --control-server-name <name>")
 	_, _ = fmt.Fprintln(w, "                         TLS server name override")
@@ -247,6 +228,5 @@ func writeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "Examples:")
 	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server wss://tun.aresa.me --token \"$GATELET_TOKEN\"")
-	_, _ = fmt.Fprintln(w, "  gatelet pg localhost:5432 --tcp --remote-port 15432 --server wss://tun.aresa.me --token \"$GATELET_TOKEN\"")
 	_, _ = fmt.Fprintln(w, "  gatelet alex http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev --control-plaintext --tui")
 }

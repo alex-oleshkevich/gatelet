@@ -24,7 +24,6 @@ type EventType string
 const (
 	EventTunnelConnected    EventType = "tunnel_connected"
 	EventTunnelReconnecting EventType = "tunnel_reconnecting"
-	EventTCPConnectionOpen  EventType = "tcp_connection_open"
 	EventRequestReceived    EventType = "request_received"
 	EventRequestQueued      EventType = "request_queued"
 	EventRequestForwarding  EventType = "request_forwarding"
@@ -39,8 +38,6 @@ const (
 	ErrorKindLocalTarget ErrorKind = "local_target"
 	ErrorKindTunnel      ErrorKind = "tunnel"
 )
-
-const MethodTCP = "TCP"
 
 type BodyPreview struct {
 	Text        string
@@ -57,6 +54,7 @@ type RequestEvent struct {
 	Time            time.Time
 	Method          string
 	RequestURI      string
+	PublicURL       string
 	TargetURL       string
 	Host            string
 	RemoteAddr      string
@@ -164,21 +162,6 @@ func PublicURL(name, domain, serverAddr string) string {
 		return name
 	}
 	return "https://" + name + "." + domain
-}
-
-func PublicTCPURL(name, domain, serverAddr string, remotePort int) string {
-	if domain == "" {
-		domain = hostWithoutPort(serverAddr)
-	}
-	domain = strings.Trim(domain, ".")
-	host := name
-	if domain != "" {
-		host = name + "." + domain
-	}
-	if remotePort <= 0 {
-		return "tcp://" + host
-	}
-	return fmt.Sprintf("tcp://%s:%d", host, remotePort)
 }
 
 func FormatBytes(size int64) string {

@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,16 +16,13 @@ type targetProbeMsg struct {
 	health targetHealth
 }
 
-func probeTargetHealth(target string, tcp bool) tea.Cmd {
+func probeTargetHealth(target string) tea.Cmd {
 	return func() tea.Msg {
-		return targetProbeMsg{health: checkTargetHealth(target, tcp)}
+		return targetProbeMsg{health: checkTargetHealth(target)}
 	}
 }
 
-func checkTargetHealth(target string, tcp bool) targetHealth {
-	if tcp {
-		return checkTCPTargetHealth(target)
-	}
+func checkTargetHealth(target string) targetHealth {
 	probeURL, ok := normalizeTargetProbeURL(target)
 	if !ok {
 		return targetHealthDown
@@ -51,40 +47,6 @@ func checkTargetHealth(target string, tcp bool) targetHealth {
 		return targetHealthDegraded
 	}
 	return targetHealthOK
-}
-
-func checkTCPTargetHealth(target string) targetHealth {
-	addr, ok := normalizeTCPProbeAddr(target)
-	if !ok {
-		return targetHealthDown
-	}
-	conn, err := net.DialTimeout("tcp", addr, targetProbeTimeout)
-	if err != nil {
-		return targetHealthDown
-	}
-	_ = conn.Close()
-	return targetHealthOK
-}
-
-func normalizeTCPProbeAddr(target string) (string, bool) {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return "", false
-	}
-	if strings.HasPrefix(target, "tcp://") {
-		parsed, err := url.Parse(target)
-		if err != nil || parsed.Host == "" {
-			return "", false
-		}
-		target = parsed.Host
-	} else if strings.Contains(target, "://") {
-		return "", false
-	}
-	host, port, err := net.SplitHostPort(target)
-	if err != nil || host == "" || port == "" {
-		return "", false
-	}
-	return net.JoinHostPort(host, port), true
 }
 
 func normalizeTargetProbeURL(target string) (string, bool) {

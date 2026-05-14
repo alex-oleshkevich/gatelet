@@ -243,9 +243,6 @@ func tunnelRows(data adminDashboardData) templ.Component {
 }
 
 func tunnelAuthLabel(tunnel TunnelStats) string {
-	if tunnel.TunnelType == protocol.TunnelTypeTCP {
-		return "n/a"
-	}
 	if tunnel.HTTPBasicAuth {
 		return "on"
 	}
@@ -253,9 +250,6 @@ func tunnelAuthLabel(tunnel TunnelStats) string {
 }
 
 func publicTunnelURL(domain string, tunnel TunnelStats) string {
-	if tunnel.TunnelType == protocol.TunnelTypeTCP {
-		return fmt.Sprintf("tcp://%s.%s:%d", tunnel.Name, domain, tunnel.RemotePort)
-	}
 	return "https://" + tunnel.Name + "." + domain
 }
 

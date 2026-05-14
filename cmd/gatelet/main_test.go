@@ -217,21 +217,6 @@ func TestParseConfigAcceptsHTTPBasicAuthFromEnvironment(t *testing.T) {
 	}
 }
 
-func TestParseConfigRejectsHTTPBasicAuthWithTCP(t *testing.T) {
-	_, err := parseConfig([]string{
-		"pg",
-		"localhost:5432",
-		"--server", "wss://tun.example.test",
-		"--token", "dev-token",
-		"--tcp",
-		"--remote-port", "15432",
-		"--basic-auth", "operator:secret",
-	})
-	if err == nil {
-		t.Fatal("parseConfig returned nil error")
-	}
-}
-
 func TestParseConfigRejectsMalformedHTTPBasicAuth(t *testing.T) {
 	for _, value := range []string{"operator", ":secret", "operator:"} {
 		t.Run(value, func(t *testing.T) {
@@ -281,49 +266,13 @@ func TestParseConfigAcceptsPreviewSize(t *testing.T) {
 	}
 }
 
-func TestParseConfigAcceptsTCPRemotePort(t *testing.T) {
-	config, err := parseConfig([]string{
-		"pg",
-		"localhost:5432",
-		"--server", "wss://tun.example.test",
-		"--token", "dev-token",
-		"--tcp",
-		"--remote-port", "15432",
-	})
-	if err != nil {
-		t.Fatalf("parseConfig returned error: %v", err)
-	}
-	if !config.TCP {
-		t.Fatal("TCP = false, want true")
-	}
-	if config.RemotePort != 15432 {
-		t.Fatalf("RemotePort = %d, want 15432", config.RemotePort)
-	}
-	if config.Target != "localhost:5432" {
-		t.Fatalf("Target = %q, want localhost:5432", config.Target)
-	}
-}
-
-func TestParseConfigRequiresRemotePortWithTCP(t *testing.T) {
+func TestParseConfigRejectsTCPFlag(t *testing.T) {
 	_, err := parseConfig([]string{
 		"pg",
 		"localhost:5432",
 		"--server", "wss://tun.example.test",
 		"--token", "dev-token",
 		"--tcp",
-	})
-	if err == nil {
-		t.Fatal("parseConfig returned nil error")
-	}
-}
-
-func TestParseConfigRejectsRemotePortWithoutTCP(t *testing.T) {
-	_, err := parseConfig([]string{
-		"pg",
-		"localhost:5432",
-		"--server", "wss://tun.example.test",
-		"--token", "dev-token",
-		"--remote-port", "15432",
 	})
 	if err == nil {
 		t.Fatal("parseConfig returned nil error")
@@ -384,24 +333,6 @@ func TestWriteStartupText(t *testing.T) {
 
 	got := buf.String()
 	want := "url https://alex.tun.aresa.me\ntarget http://127.0.0.1:3000\n"
-	if got != want {
-		t.Fatalf("startup output = %q, want %q", got, want)
-	}
-}
-
-func TestWriteStartupTextForTCP(t *testing.T) {
-	var buf bytes.Buffer
-	writeStartup(&buf, client.Config{
-		Name:       "pg",
-		ServerAddr: "wss://tun.example.test",
-		Target:     "localhost:5432",
-		LogFormat:  client.LogFormatText,
-		TCP:        true,
-		RemotePort: 15432,
-	})
-
-	got := buf.String()
-	want := "url tcp://pg.tun.example.test:15432\ntarget localhost:5432\n"
 	if got != want {
 		t.Fatalf("startup output = %q, want %q", got, want)
 	}

@@ -46,7 +46,6 @@ func Run(ctx context.Context, config client.Config) error {
 		pause:         pause,
 		url:           tuiPublicURL(config),
 		target:        config.Target,
-		tcp:           config.TCP,
 		httpBasicAuth: config.HTTPBasicAuthEnabled(),
 		status:        "connecting",
 		targetHealth:  targetHealthUnknown,
@@ -60,9 +59,6 @@ func Run(ctx context.Context, config client.Config) error {
 }
 
 func tuiPublicURL(config client.Config) string {
-	if config.TCP {
-		return client.PublicTCPURL(config.Name, config.Domain, config.ServerAddr, config.RemotePort)
-	}
 	return client.PublicURL(config.Name, config.Domain, config.ServerAddr)
 }
 

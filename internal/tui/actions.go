@@ -38,10 +38,6 @@ func (m *model) copySelectedCurl() {
 		m.message = "no request selected"
 		return
 	}
-	if event.Method == client.MethodTCP {
-		m.message = "curl unavailable for tcp connections"
-		return
-	}
 	command, err := client.CurlCommand(event, m.url)
 	if err != nil {
 		m.message = "curl failed: " + err.Error()
@@ -58,10 +54,6 @@ func (m *model) exportSelectedCurl() {
 	event, ok := m.selectedEvent()
 	if !ok {
 		m.message = "no request selected"
-		return
-	}
-	if event.Method == client.MethodTCP {
-		m.message = "curl unavailable for tcp connections"
 		return
 	}
 	command, err := client.CurlCommand(event, m.url)
@@ -89,10 +81,6 @@ func (m model) replaySelectedRequest() (tea.Model, tea.Cmd) {
 	event, ok := m.selectedEvent()
 	if !ok {
 		m.message = "no request selected"
-		return m, nil
-	}
-	if event.Method == client.MethodTCP {
-		m.message = "replay unavailable for tcp connections"
 		return m, nil
 	}
 	target := m.target

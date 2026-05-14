@@ -67,7 +67,6 @@ type model struct {
 
 	url           string
 	target        string
-	tcp           bool
 	httpBasicAuth bool
 	captureDir    string
 	status        string
@@ -95,7 +94,7 @@ type model struct {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(waitEvent(m.events), waitClient(m.clientErr), tick(), probeTargetHealth(m.target, m.tcp))
+	return tea.Batch(waitEvent(m.events), waitClient(m.clientErr), tick(), probeTargetHealth(m.target))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -116,10 +115,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch event.Type {
 		case client.EventTunnelConnected:
 			m.status = "online"
+			if event.PublicURL != "" {
+				m.url = event.PublicURL
+			}
 			if strings.HasPrefix(m.message, "reconnecting:") {
 				m.message = "reconnected"
 			}
-			return m, tea.Batch(waitEvent(m.events), probeTargetHealth(m.target, m.tcp))
+			return m, tea.Batch(waitEvent(m.events), probeTargetHealth(m.target))
 		case client.EventTunnelReconnecting:
 			m.status = "reconnecting"
 			if event.Duration > 0 {

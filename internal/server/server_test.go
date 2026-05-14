@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -11,7 +10,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -95,70 +93,6 @@ func TestServerRoutesSubdomainThroughClientTunnel(t *testing.T) {
 	if string(body) != "hello from local" {
 		t.Fatalf("body = %q, want %q", string(body), "hello from local")
 	}
-}
-
-func TestServerRoutesTCPThroughClientTunnel(t *testing.T) {
-	target := listenTCPEchoServer(t)
-	remotePort := freeTCPPort(t)
-
-	control := listenLocal(t)
-	defer control.Close()
-
-	relay := New(Config{
-		Domain:      "example.test",
-		Token:       "dev-token",
-		ControlAddr: control.Addr().String(),
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		_ = relay.ServeControl(ctx, control)
-	}()
-	go func() {
-		_ = client.Run(ctx, client.Config{
-			Name:       "pg",
-			ServerAddr: control.Addr().String(),
-			Target:     target,
-			Token:      "dev-token",
-			TCP:        true,
-			RemotePort: remotePort,
-		})
-	}()
-
-	waitForTunnel(t, relay, "pg")
-
-	conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(remotePort)))
-	if err != nil {
-		t.Fatalf("Dial returned error: %v", err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.Write([]byte("ping\n")); err != nil {
-		t.Fatalf("Write returned error: %v", err)
-	}
-	buf := make([]byte, len("echo: ping\n"))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("ReadFull returned error: %v", err)
-	}
-	if string(buf) != "echo: ping\n" {
-		t.Fatalf("response = %q, want echo: ping", string(buf))
-	}
-
-	_ = conn.Close()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		stats, ok := relay.TunnelStats("pg")
-		if ok && stats.Requests == 1 && stats.BytesIn >= int64(len("ping\n")) && stats.BytesOut >= int64(len("echo: ping\n")) {
-			if stats.TunnelType != protocol.TunnelTypeTCP || stats.RemotePort != remotePort {
-				t.Fatalf("stats = %+v, want tcp remote port %d", stats, remotePort)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for tcp stats")
 }
 
 func TestServerRoutesThroughWebSocketControlTunnel(t *testing.T) {
@@ -1362,50 +1296,6 @@ func listenLocal(t *testing.T) net.Listener {
 	}
 
 	return ln
-}
-
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-
-	ln := listenLocal(t)
-	defer ln.Close()
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("SplitHostPort returned error: %v", err)
-	}
-	var remotePort int
-	if _, err := fmt.Sscanf(port, "%d", &remotePort); err != nil {
-		t.Fatalf("Sscanf returned error: %v", err)
-	}
-	return remotePort
-}
-
-func listenTCPEchoServer(t *testing.T) string {
-	t.Helper()
-
-	ln := listenLocal(t)
-	t.Cleanup(func() {
-		_ = ln.Close()
-	})
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				line, err := bufio.NewReader(conn).ReadString('\n')
-				if err != nil {
-					return
-				}
-				_, _ = fmt.Fprintf(conn, "echo: %s", line)
-			}()
-		}
-	}()
-
-	return ln.Addr().String()
 }
 
 func startTestTunnel(t *testing.T, target string) (*Server, func()) {

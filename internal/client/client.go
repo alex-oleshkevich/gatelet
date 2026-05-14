@@ -37,8 +37,6 @@ type Config struct {
 	TokenID               string
 	Domain                string
 	TUI                   bool
-	TCP                   bool
-	RemotePort            int
 	HTTPBasicAuthUser     string
 	HTTPBasicAuthPassword string
 	ControlTLS            bool
@@ -136,8 +134,7 @@ func runSession(ctx context.Context, config Config) (bool, error) {
 		Name:            config.Name,
 		ProtocolVersion: protocol.CurrentProtocolVersion,
 		ClientVersion:   config.ClientVersion,
-		TunnelType:      tunnelType(config),
-		RemotePort:      config.RemotePort,
+		TunnelType:      protocol.TunnelTypeHTTP,
 	}
 	if config.HTTPBasicAuthEnabled() {
 		hello.HTTPBasicAuth = &protocol.HTTPBasicAuthConfig{
@@ -194,8 +191,9 @@ func runSession(ctx context.Context, config Config) (bool, error) {
 	}
 	defer session.Close()
 	emit(config.Events, RequestEvent{
-		Type: EventTunnelConnected,
-		Time: time.Now(),
+		Type:      EventTunnelConnected,
+		Time:      time.Now(),
+		PublicURL: PublicURL(config.Name, config.Domain, config.ServerAddr),
 	})
 
 	for {
@@ -210,19 +208,8 @@ func runSession(ctx context.Context, config Config) (bool, error) {
 			return true, fmt.Errorf("accept tunnel stream: %w", err)
 		}
 
-		if config.TCP {
-			go handleTCPStream(ctx, stream, config)
-		} else {
-			go handleStream(ctx, stream, config)
-		}
+		go handleStream(ctx, stream, config)
 	}
-}
-
-func tunnelType(config Config) string {
-	if config.TCP {
-		return protocol.TunnelTypeTCP
-	}
-	return protocol.TunnelTypeHTTP
 }
 
 func (c Config) HTTPBasicAuthEnabled() bool {
@@ -596,259 +583,6 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	}
 	logRequest(config.RequestLog, config.LogFormat, event)
 	emit(config.Events, event)
-}
-
-func handleTCPStream(ctx context.Context, stream net.Conn, config Config) {
-	defer stream.Close()
-
-	id := atomic.AddUint64(&requestID, 1)
-	started := time.Now()
-	line, err := protocol.ReadLine(stream, maxHandshakeResponseBytes)
-	if err != nil {
-		logTCPStatus(config.StatusLog, config.LogFormat, "tcp stream header failed", err)
-		emit(config.Events, tcpFailedEvent(id, "", config.Target, started, err, ErrorKindTunnel))
-		return
-	}
-	var header protocol.TCPStreamHeader
-	if err := json.Unmarshal(line, &header); err != nil {
-		logTCPStatus(config.StatusLog, config.LogFormat, "tcp stream header invalid", err)
-		emit(config.Events, tcpFailedEvent(id, header.RemoteAddr, config.Target, started, err, ErrorKindTunnel))
-		return
-	}
-
-	targetAddr, err := tcpTargetAddr(config.Target)
-	if err != nil {
-		logTCPStatus(config.StatusLog, config.LogFormat, "tcp target invalid", err)
-		emit(config.Events, tcpFailedEvent(id, header.RemoteAddr, config.Target, started, err, ErrorKindLocalTarget))
-		return
-	}
-	emit(config.Events, RequestEvent{
-		ID:         id,
-		Type:       EventTCPConnectionOpen,
-		Time:       started,
-		Method:     MethodTCP,
-		RequestURI: targetAddr,
-		TargetURL:  targetAddr,
-		RemoteAddr: header.RemoteAddr,
-	})
-	if config.PauseController != nil {
-		wasPaused := config.PauseController.IsPaused()
-		if wasPaused {
-			emit(config.Events, RequestEvent{
-				ID:         id,
-				Type:       EventRequestQueued,
-				Time:       time.Now(),
-				Method:     MethodTCP,
-				RequestURI: targetAddr,
-				TargetURL:  targetAddr,
-				RemoteAddr: header.RemoteAddr,
-				QueueDepth: config.PauseController.QueueDepth() + 1,
-			})
-		}
-		pauseCtx, cancel := context.WithTimeout(ctx, config.PauseTimeout)
-		queued, err := config.PauseController.WaitIfPaused(pauseCtx)
-		cancel()
-		if queued && !wasPaused {
-			emit(config.Events, RequestEvent{
-				ID:         id,
-				Type:       EventRequestQueued,
-				Time:       time.Now(),
-				Method:     MethodTCP,
-				RequestURI: targetAddr,
-				TargetURL:  targetAddr,
-				RemoteAddr: header.RemoteAddr,
-				QueueDepth: config.PauseController.QueueDepth(),
-			})
-		}
-		if err != nil {
-			logTCPStatus(config.StatusLog, config.LogFormat, "tcp connection paused too long", err)
-			emit(config.Events, tcpFailedEvent(id, header.RemoteAddr, targetAddr, started, err, ErrorKindTunnel))
-			return
-		}
-	}
-	emit(config.Events, RequestEvent{
-		ID:         id,
-		Type:       EventRequestForwarding,
-		Time:       time.Now(),
-		Method:     MethodTCP,
-		RequestURI: targetAddr,
-		TargetURL:  targetAddr,
-		RemoteAddr: header.RemoteAddr,
-	})
-
-	var dialer net.Dialer
-	target, err := dialer.DialContext(ctx, "tcp", targetAddr)
-	if err != nil {
-		logTCPStatus(config.StatusLog, config.LogFormat, "tcp target unavailable", err)
-		emit(config.Events, tcpFailedEvent(id, header.RemoteAddr, targetAddr, started, err, ErrorKindLocalTarget))
-		return
-	}
-	defer target.Close()
-
-	bytesIn, bytesOut := proxyConns(target, stream)
-	duration := time.Since(started)
-	logTCPConnection(config.RequestLog, config.LogFormat, tcpConnectionLog{
-		RemoteAddr: header.RemoteAddr,
-		Target:     targetAddr,
-		BytesIn:    bytesIn,
-		BytesOut:   bytesOut,
-		Duration:   duration,
-	})
-	emit(config.Events, RequestEvent{
-		ID:           id,
-		Type:         EventRequestCompleted,
-		Time:         time.Now(),
-		Method:       MethodTCP,
-		RequestURI:   targetAddr,
-		TargetURL:    targetAddr,
-		RemoteAddr:   header.RemoteAddr,
-		StatusCode:   200,
-		RequestSize:  bytesIn,
-		ResponseSize: bytesOut,
-		Duration:     duration,
-	})
-}
-
-func tcpFailedEvent(id uint64, remoteAddr string, target string, started time.Time, err error, kind ErrorKind) RequestEvent {
-	return RequestEvent{
-		ID:         id,
-		Type:       EventRequestFailed,
-		Time:       time.Now(),
-		Method:     MethodTCP,
-		RequestURI: tcpConnectionURI(target, remoteAddr),
-		TargetURL:  target,
-		RemoteAddr: remoteAddr,
-		Duration:   time.Since(started),
-		Error:      err.Error(),
-		ErrorKind:  kind,
-	}
-}
-
-func tcpConnectionURI(target string, remoteAddr string) string {
-	if target != "" {
-		return target
-	}
-	if remoteAddr != "" {
-		return remoteAddr
-	}
-	return "connection"
-}
-
-type tcpConnectionLog struct {
-	RemoteAddr string
-	Target     string
-	BytesIn    int64
-	BytesOut   int64
-	Duration   time.Duration
-}
-
-func logTCPConnection(w io.Writer, format LogFormat, record tcpConnectionLog) {
-	if w == nil {
-		return
-	}
-	if format == LogFormatJSON || format == LogFormatJSONL {
-		data, err := json.Marshal(struct {
-			Type       string  `json:"type"`
-			RemoteIP   string  `json:"remote_ip"`
-			Target     string  `json:"target"`
-			BytesIn    int64   `json:"bytes_in"`
-			BytesOut   int64   `json:"bytes_out"`
-			DurationMS float64 `json:"duration_ms"`
-		}{
-			Type:       "tcp_connection",
-			RemoteIP:   remoteIP(record.RemoteAddr),
-			Target:     record.Target,
-			BytesIn:    record.BytesIn,
-			BytesOut:   record.BytesOut,
-			DurationMS: float64(record.Duration.Microseconds()) / 1000,
-		})
-		if err == nil {
-			_, _ = fmt.Fprintln(w, string(data))
-		}
-		return
-	}
-	_, _ = fmt.Fprintf(w, "TCP %s -> %s in=%s out=%s duration=%s\n",
-		emptyDefault(remoteIP(record.RemoteAddr), "-"),
-		record.Target,
-		FormatBytes(record.BytesIn),
-		FormatBytes(record.BytesOut),
-		record.Duration.Round(time.Millisecond),
-	)
-}
-
-func logTCPStatus(w io.Writer, format LogFormat, message string, err error) {
-	if w == nil {
-		return
-	}
-	if format == LogFormatJSON || format == LogFormatJSONL {
-		data, marshalErr := json.Marshal(struct {
-			Type  string `json:"type"`
-			Event string `json:"event"`
-			Error string `json:"error"`
-		}{
-			Type:  "status",
-			Event: message,
-			Error: err.Error(),
-		})
-		if marshalErr == nil {
-			_, _ = fmt.Fprintln(w, string(data))
-		}
-		return
-	}
-	_, _ = fmt.Fprintf(w, "%s: %v\n", message, err)
-}
-
-func tcpTargetAddr(target string) (string, error) {
-	if strings.HasPrefix(target, "tcp://") {
-		parsed, err := url.Parse(target)
-		if err != nil {
-			return "", err
-		}
-		target = parsed.Host
-	} else if strings.Contains(target, "://") {
-		return "", fmt.Errorf("tcp target must be host:port or tcp://host:port")
-	}
-
-	host, port, err := net.SplitHostPort(target)
-	if err != nil {
-		return "", fmt.Errorf("tcp target must include host and port: %w", err)
-	}
-	if host == "" || port == "" {
-		return "", fmt.Errorf("tcp target must include host and port")
-	}
-	return net.JoinHostPort(host, port), nil
-}
-
-func proxyConns(dst, src net.Conn) (int64, int64) {
-	type result struct {
-		fromSrc bool
-		n       int64
-	}
-	done := make(chan result, 2)
-
-	go func() {
-		n, _ := io.Copy(dst, src)
-		done <- result{fromSrc: true, n: n}
-	}()
-	go func() {
-		n, _ := io.Copy(src, dst)
-		done <- result{fromSrc: false, n: n}
-	}()
-
-	first := <-done
-	_ = dst.Close()
-	_ = src.Close()
-	second := <-done
-
-	var bytesIn, bytesOut int64
-	for _, item := range []result{first, second} {
-		if item.fromSrc {
-			bytesIn = item.n
-		} else {
-			bytesOut = item.n
-		}
-	}
-	return bytesIn, bytesOut
 }
 
 func writeError(w io.Writer, status int, message string) {

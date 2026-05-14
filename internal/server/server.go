@@ -73,10 +73,7 @@ type Server struct {
 type tunnelSession struct {
 	session         *yamux.Session
 	remote          string
-	tunnelType      string
-	remotePort      int
 	httpBasicAuth   *protocol.HTTPBasicAuthConfig
-	tcpListener     net.Listener
 	requests        uint64
 	bytesIn         int64
 	bytesOut        int64
@@ -89,8 +86,6 @@ type tunnelSession struct {
 type TunnelStats struct {
 	Name            string
 	Remote          string
-	TunnelType      string
-	RemotePort      int
 	HTTPBasicAuth   bool
 	Requests        uint64
 	BytesIn         int64
@@ -117,8 +112,6 @@ type statusTotals struct {
 type tunnelStatus struct {
 	Name          string         `json:"name"`
 	Remote        string         `json:"remote"`
-	TunnelType    string         `json:"tunnel_type"`
-	RemotePort    int            `json:"remote_port,omitempty"`
 	HTTPBasicAuth bool           `json:"http_basic_auth"`
 	Requests      uint64         `json:"requests"`
 	BytesIn       int64          `json:"bytes_in"`
@@ -389,7 +382,7 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	s.logger.Info("client hello received", "name", hello.Name, "remote", remote, "protocol_version", hello.ProtocolVersion, "client_version", hello.ClientVersion, "tunnel_type", hello.TunnelType, "remote_port", hello.RemotePort)
+	s.logger.Info("client hello received", "name", hello.Name, "remote", remote, "protocol_version", hello.ProtocolVersion, "client_version", hello.ClientVersion, "tunnel_type", hello.TunnelType)
 	if !s.nameAllowed(hello.Name) {
 		s.logger.Warn("tunnel name denied", "name", hello.Name, "remote", remote)
 		_, _ = conn.Write([]byte(protocol.HandshakeNameNotAllowed))
@@ -430,22 +423,8 @@ func (s *Server) handleControlConn(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	var tcpListener net.Listener
-	if hello.TunnelType == protocol.TunnelTypeTCP {
-		tcpListener, err = net.Listen("tcp", fmt.Sprintf(":%d", hello.RemotePort))
-		if err != nil {
-			s.logger.Warn("tcp remote port unavailable", "name", hello.Name, "remote", remote, "remote_port", hello.RemotePort, "error", err)
-			_, _ = conn.Write([]byte(protocol.HandshakeRemotePortInUse))
-			s.releaseReservation(hello.Name, remote)
-			_ = conn.Close()
-			return
-		}
-	}
 	if _, err := conn.Write([]byte(protocol.HandshakeOK)); err != nil {
 		s.logger.Warn("send auth ok failed", "name", hello.Name, "remote", remote, "error", err)
-		if tcpListener != nil {
-			_ = tcpListener.Close()
-		}
 		s.releaseReservation(hello.Name, remote)
 		_ = conn.Close()
 		return
@@ -457,18 +436,12 @@ func (s *Server) handleControlConn(conn net.Conn) {
 	session, err := yamux.Server(conn, yamuxConfig(s.heartbeatInterval, s.heartbeatTimeout))
 	if err != nil {
 		s.logger.Error("start tunnel session failed", "name", hello.Name, "remote", remote, "error", err)
-		if tcpListener != nil {
-			_ = tcpListener.Close()
-		}
 		s.releaseReservation(hello.Name, remote)
 		_ = conn.Close()
 		return
 	}
 
-	s.register(hello, session, remote, tcpListener)
-	if tcpListener != nil {
-		go s.serveTCP(hello.Name, session, tcpListener)
-	}
+	s.register(hello, session, remote)
 	<-session.CloseChan()
 	s.unregister(hello.Name, session, remote)
 }
@@ -499,15 +472,12 @@ func (s *Server) releaseReservation(name string, remote string) {
 	}
 }
 
-func (s *Server) register(hello protocol.ClientHello, session *yamux.Session, remote string, tcpListener net.Listener) {
+func (s *Server) register(hello protocol.ClientHello, session *yamux.Session, remote string) {
 	now := time.Now()
 	record := &tunnelSession{
 		session:         session,
 		remote:          remote,
-		tunnelType:      hello.TunnelType,
-		remotePort:      hello.RemotePort,
 		httpBasicAuth:   hello.HTTPBasicAuth,
-		tcpListener:     tcpListener,
 		statusCounts:    make(map[int]uint64),
 		durationBuckets: make([]uint64, len(durationBuckets)+1),
 		connectedAt:     now,
@@ -519,13 +489,7 @@ func (s *Server) register(hello protocol.ClientHello, session *yamux.Session, re
 	s.sessions[hello.Name] = record
 	s.mu.Unlock()
 
-	attrs := []any{"name", hello.Name, "remote", remote, "tunnel_type", hello.TunnelType, "http_basic_auth", hello.HTTPBasicAuth != nil, "connected_at", now}
-	if hello.TunnelType == protocol.TunnelTypeTCP {
-		attrs = append(attrs, "url", fmt.Sprintf("tcp://%s.%s:%d", hello.Name, s.domain, hello.RemotePort), "remote_port", hello.RemotePort)
-	} else {
-		attrs = append(attrs, "url", "https://"+hello.Name+"."+s.domain)
-	}
-	s.logger.Info("tunnel connected", attrs...)
+	s.logger.Info("tunnel connected", "name", hello.Name, "remote", remote, "tunnel_type", protocol.TunnelTypeHTTP, "http_basic_auth", hello.HTTPBasicAuth != nil, "connected_at", now, "url", "https://"+hello.Name+"."+s.domain)
 }
 
 func (s *Server) unregister(name string, session *yamux.Session, remote string) {
@@ -534,15 +498,11 @@ func (s *Server) unregister(name string, session *yamux.Session, remote string) 
 
 	if current := s.sessions[name]; current != nil && current.session == session {
 		delete(s.sessions, name)
-		if current.tcpListener != nil {
-			_ = current.tcpListener.Close()
-		}
 		stats := current.stats(name)
 		s.logger.Info(
 			"tunnel disconnected",
 			"name", name,
-			"tunnel_type", stats.TunnelType,
-			"remote_port", stats.RemotePort,
+			"tunnel_type", protocol.TunnelTypeHTTP,
 			"remote", remote,
 			"requests", stats.Requests,
 			"bytes_in", stats.BytesIn,
@@ -552,68 +512,6 @@ func (s *Server) unregister(name string, session *yamux.Session, remote string) 
 			"disconnect_reason", "session_closed",
 		)
 	}
-}
-
-func (s *Server) serveTCP(name string, session *yamux.Session, ln net.Listener) {
-	s.logger.Info("tcp listener started", "name", name, "addr", ln.Addr().String())
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) || session.IsClosed() {
-				s.logger.Info("tcp listener stopped", "name", name, "addr", ln.Addr().String())
-				return
-			}
-			s.logger.Warn("tcp accept failed", "name", name, "addr", ln.Addr().String(), "error", err)
-			continue
-		}
-		go s.handleTCPConn(name, session, conn)
-	}
-}
-
-func (s *Server) handleTCPConn(name string, session *yamux.Session, conn net.Conn) {
-	defer conn.Close()
-
-	started := time.Now()
-	remote := conn.RemoteAddr().String()
-	s.logger.Info("tcp connection accepted", "name", name, "remote", remote)
-
-	stream, err := session.OpenStream()
-	if err != nil {
-		s.logger.Error("open tcp tunnel stream failed", "name", name, "remote", remote, "error", err)
-		return
-	}
-	defer stream.Close()
-
-	if err := json.NewEncoder(stream).Encode(protocol.TCPStreamHeader{RemoteAddr: remote}); err != nil {
-		s.logger.Error("write tcp stream header failed", "name", name, "remote", remote, "error", err)
-		return
-	}
-
-	bytesIn, bytesOut := proxyConns(stream, conn)
-	duration := time.Since(started)
-	s.recordTCPConnection(name, bytesIn, bytesOut, duration)
-	s.logger.Info("tcp connection closed", "name", name, "remote", remote, "bytes_in", bytesIn, "bytes_out", bytesOut, "duration", duration)
-}
-
-func (s *Server) recordTCPConnection(name string, bytesIn, bytesOut int64, duration time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tunnel := s.sessions[name]
-	if tunnel == nil {
-		return
-	}
-	tunnel.requests++
-	tunnel.bytesIn += bytesIn
-	tunnel.bytesOut += bytesOut
-	seconds := duration.Seconds()
-	for i, bucket := range durationBuckets {
-		if seconds <= bucket {
-			tunnel.durationBuckets[i]++
-		}
-	}
-	tunnel.durationBuckets[len(tunnel.durationBuckets)-1]++
-	tunnel.lastSeen = time.Now()
 }
 
 func (s *Server) recordRequest(name string, status int, bytesIn, bytesOut int64, duration time.Duration) {
@@ -651,8 +549,6 @@ func (s *Server) serveStatus(w http.ResponseWriter) {
 		response.Tunnels = append(response.Tunnels, tunnelStatus{
 			Name:          tunnel.Name,
 			Remote:        tunnel.Remote,
-			TunnelType:    tunnel.TunnelType,
-			RemotePort:    tunnel.RemotePort,
 			HTTPBasicAuth: tunnel.HTTPBasicAuth,
 			Requests:      tunnel.Requests,
 			BytesIn:       tunnel.BytesIn,
@@ -802,8 +698,6 @@ func (t *tunnelSession) stats(name string) TunnelStats {
 	return TunnelStats{
 		Name:            name,
 		Remote:          t.remote,
-		TunnelType:      t.tunnelType,
-		RemotePort:      t.remotePort,
 		HTTPBasicAuth:   t.httpBasicAuth != nil,
 		Requests:        t.requests,
 		BytesIn:         t.bytesIn,
@@ -820,7 +714,7 @@ func (s *Server) httpTunnel(name string) (*yamux.Session, *protocol.HTTPBasicAut
 	defer s.mu.RUnlock()
 
 	tunnel := s.sessions[name]
-	if tunnel == nil || tunnel.tunnelType != protocol.TunnelTypeHTTP || tunnel.session.IsClosed() {
+	if tunnel == nil || tunnel.session.IsClosed() {
 		return nil, nil
 	}
 	return tunnel.session, tunnel.httpBasicAuth
@@ -889,38 +783,6 @@ func addForwardedHeaders(r *http.Request) {
 type countingWriter struct {
 	writer io.Writer
 	n      int64
-}
-
-func proxyConns(dst, src net.Conn) (int64, int64) {
-	type result struct {
-		fromSrc bool
-		n       int64
-	}
-	done := make(chan result, 2)
-
-	go func() {
-		n, _ := io.Copy(dst, src)
-		done <- result{fromSrc: true, n: n}
-	}()
-	go func() {
-		n, _ := io.Copy(src, dst)
-		done <- result{fromSrc: false, n: n}
-	}()
-
-	first := <-done
-	_ = dst.Close()
-	_ = src.Close()
-	second := <-done
-
-	var bytesIn, bytesOut int64
-	for _, item := range []result{first, second} {
-		if item.fromSrc {
-			bytesIn = item.n
-		} else {
-			bytesOut = item.n
-		}
-	}
-	return bytesIn, bytesOut
 }
 
 func (w *countingWriter) Write(p []byte) (int, error) {
