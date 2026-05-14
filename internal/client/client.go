@@ -133,6 +133,10 @@ func Run(ctx context.Context, config Config) error {
 		return fmt.Errorf("start tunnel session: %w", err)
 	}
 	defer session.Close()
+	emit(config.Events, RequestEvent{
+		Type: EventTunnelConnected,
+		Time: time.Now(),
+	})
 
 	for {
 		stream, err := session.AcceptStream()

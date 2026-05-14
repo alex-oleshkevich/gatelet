@@ -22,6 +22,7 @@ const (
 type EventType string
 
 const (
+	EventTunnelConnected   EventType = "tunnel_connected"
 	EventRequestReceived   EventType = "request_received"
 	EventRequestQueued     EventType = "request_queued"
 	EventRequestForwarding EventType = "request_forwarding"

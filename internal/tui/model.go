@@ -69,6 +69,7 @@ type model struct {
 	captureDir   string
 	status       string
 	targetHealth targetHealth
+	targetLive   bool
 	message      string
 	paused       bool
 	mode         viewMode
@@ -91,7 +92,7 @@ type model struct {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(waitEvent(m.events), waitClient(m.clientErr), tick())
+	return tea.Batch(waitEvent(m.events), waitClient(m.clientErr), tick(), probeTargetHealth(m.target))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -108,9 +109,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.now = time.Time(msg)
 		return m, tick()
 	case eventMsg:
-		m.applyEvent(client.RequestEvent(msg))
+		event := client.RequestEvent(msg)
+		if event.Type == client.EventTunnelConnected {
+			m.status = "online"
+			return m, tea.Batch(waitEvent(m.events), probeTargetHealth(m.target))
+		}
+		m.applyEvent(event)
 		m.clampSelection()
 		return m, waitEvent(m.events)
+	case targetProbeMsg:
+		if !m.targetLive {
+			m.targetHealth = msg.health
+		}
+		return m, nil
 	case clientDoneMsg:
 		if msg.err != nil && m.ctx.Err() == nil {
 			m.status = "disconnected"
@@ -179,10 +190,13 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab", "l", "right":
 		if m.mode == viewInspector || m.mode == viewBody {
-			if m.inspectorTab == inspectorTabResponse {
+			next := inspectorTabResponse
+			if msg.String() == "tab" && m.inspectorTab == inspectorTabResponse {
+				next = inspectorTabRequest
+			} else if m.inspectorTab == inspectorTabResponse {
 				break
 			}
-			m.inspectorTab = inspectorTabResponse
+			m.inspectorTab = next
 			m.detailScroll = 0
 			m.bodyScroll = 0
 			m.clampSelection()
@@ -432,10 +446,13 @@ func (m *model) updateTargetHealth(item requestItem) {
 	switch {
 	case item.ErrorKind == client.ErrorKindLocalTarget:
 		m.targetHealth = targetHealthDown
+		m.targetLive = true
 	case (item.State == client.EventResponseStarted || item.State == client.EventRequestCompleted) && item.StatusCode >= 500:
 		m.targetHealth = targetHealthDegraded
+		m.targetLive = true
 	case (item.State == client.EventResponseStarted || item.State == client.EventRequestCompleted) && item.StatusCode > 0:
 		m.targetHealth = targetHealthOK
+		m.targetLive = true
 	}
 }
 

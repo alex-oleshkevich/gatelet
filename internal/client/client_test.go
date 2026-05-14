@@ -429,6 +429,81 @@ func TestHandleStreamUsesConfiguredPreviewLimit(t *testing.T) {
 	}
 }
 
+func TestRunEmitsTunnelConnectedEventAfterHandshake(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+
+	const token = "secret-token"
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		line, err := protocol.ReadLine(conn, 1024)
+		if err != nil {
+			return
+		}
+		hello, err := protocol.ParseClientHello(line)
+		if err != nil {
+			return
+		}
+		challenge := protocol.ServerChallenge{Nonce: "nonce-value"}
+		if err := json.NewEncoder(conn).Encode(challenge); err != nil {
+			return
+		}
+		line, err = protocol.ReadLine(conn, 1024)
+		if err != nil {
+			return
+		}
+		response, err := protocol.ParseClientChallengeResponse(line)
+		if err != nil {
+			return
+		}
+		if !protocol.ValidChallengeResponse(hello.Name, challenge.Nonce, token, response.Response) {
+			return
+		}
+		_, _ = io.WriteString(conn, protocol.HandshakeOK)
+		<-time.After(100 * time.Millisecond)
+	}()
+
+	events := make(chan RequestEvent, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Name:       "alex",
+			ServerAddr: ln.Addr().String(),
+			Target:     "127.0.0.1:3000",
+			Token:      token,
+			Events:     events,
+		})
+	}()
+
+	select {
+	case event := <-events:
+		if event.Type != EventTunnelConnected {
+			t.Fatalf("event.Type = %q, want %q", event.Type, EventTunnelConnected)
+		}
+	case err := <-done:
+		t.Fatalf("Run returned before connected event: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connected event")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for Run to stop")
+	}
+}
+
 func TestHandleStreamReportsForwardedTargetURL(t *testing.T) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))

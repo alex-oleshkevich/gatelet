@@ -45,14 +45,8 @@ func (m model) renderHeader(width int) string {
 	switch m.mode {
 	case viewBody:
 		left = titleStyle.Render("gatelet") + " " + headStyle.Render(m.inspectorTabLabel()+" body")
-		if item, ok := m.selectedRequest(); ok {
-			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
-		}
 	case viewInspector:
 		left = titleStyle.Render("gatelet") + " " + headStyle.Render(m.inspectorTabLabel()+" inspector")
-		if item, ok := m.selectedRequest(); ok {
-			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
-		}
 	}
 
 	queueDepth := 0

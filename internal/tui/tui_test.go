@@ -3,6 +3,8 @@ package tui
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +77,28 @@ func TestInspectorTabSwitchRequestsScreenClear(t *testing.T) {
 	}
 }
 
+func TestInspectorTabCyclesBothDirections(t *testing.T) {
+	m := detailActionModel()
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("first tab returned nil command, want screen clear command")
+	}
+	got := updated.(model)
+	if got.inspectorTab != inspectorTabResponse {
+		t.Fatalf("first tab inspectorTab = %v, want response", got.inspectorTab)
+	}
+
+	updated, cmd = got.updateKey(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("second tab returned nil command, want screen clear command")
+	}
+	got = updated.(model)
+	if got.inspectorTab != inspectorTabRequest {
+		t.Fatalf("second tab inspectorTab = %v, want request", got.inspectorTab)
+	}
+}
+
 func TestListViewLeavesBlankLineAfterHeader(t *testing.T) {
 	m := model{
 		url:    "https://alex.tun.aresa.me",
@@ -120,7 +144,7 @@ func TestListViewShowsApprovedColumns(t *testing.T) {
 			t.Fatalf("View missing %q:\n%s", want, plain)
 		}
 	}
-	for _, notWant := range []string{"Method", "Path", "Status", "Remote IP", "Request headers"} {
+	for _, notWant := range []string{"Method", "Path", "Status", "Remote IP", "REQUEST HEADERS"} {
 		if strings.Contains(plain, notWant) {
 			t.Fatalf("list view included %q:\n%s", notWant, plain)
 		}
@@ -167,6 +191,32 @@ func TestHeaderForwardingModeFollowsConnectionStatus(t *testing.T) {
 	plain = stripANSI(m.View())
 	if !strings.Contains(plain, "accepting") {
 		t.Fatalf("online header missing accepting forwarding mode:\n%s", plain)
+	}
+}
+
+func TestTunnelConnectedEventMarksTUIOnline(t *testing.T) {
+	events := make(chan client.RequestEvent)
+	m := model{
+		ctx:          context.Background(),
+		status:       "connecting",
+		targetHealth: targetHealthUnknown,
+		events:       events,
+		index:        make(map[uint64]int),
+	}
+
+	got, cmd := m.Update(eventMsg(client.RequestEvent{
+		Type: client.EventTunnelConnected,
+		Time: time.Now(),
+	}))
+	updated := got.(model)
+	if updated.status != "online" {
+		t.Fatalf("status = %q, want online", updated.status)
+	}
+	if len(updated.requests) != 0 {
+		t.Fatalf("requests = %d, want 0 for lifecycle event", len(updated.requests))
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want waitEvent command")
 	}
 }
 
@@ -222,6 +272,57 @@ func TestTargetHealthUpdatesFromRequestEvents(t *testing.T) {
 	})
 	if m.targetHealth != targetHealthDown {
 		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthDown)
+	}
+}
+
+func TestTargetHealthProbeMapsReachability(t *testing.T) {
+	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Fatalf("method = %s, want HEAD", r.Method)
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer okServer.Close()
+
+	if got := checkTargetHealth(okServer.URL); got != targetHealthOK {
+		t.Fatalf("ok target health = %q, want %q", got, targetHealthOK)
+	}
+
+	degradedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer degradedServer.Close()
+
+	if got := checkTargetHealth(degradedServer.URL); got != targetHealthDegraded {
+		t.Fatalf("degraded target health = %q, want %q", got, targetHealthDegraded)
+	}
+
+	if got := checkTargetHealth("ftp://127.0.0.1:1"); got != targetHealthDown {
+		t.Fatalf("unsupported target health = %q, want %q", got, targetHealthDown)
+	}
+}
+
+func TestTargetProbeUpdatesUnknownButDoesNotOverrideTrafficHealth(t *testing.T) {
+	m := model{targetHealth: targetHealthUnknown}
+
+	got, _ := m.Update(targetProbeMsg{health: targetHealthOK})
+	updated := got.(model)
+	if updated.targetHealth != targetHealthOK {
+		t.Fatalf("targetHealth = %q, want %q", updated.targetHealth, targetHealthOK)
+	}
+
+	updated.updateTargetHealth(requestItem{
+		State:      client.EventRequestCompleted,
+		StatusCode: http.StatusServiceUnavailable,
+	})
+	if updated.targetHealth != targetHealthDegraded {
+		t.Fatalf("traffic targetHealth = %q, want %q", updated.targetHealth, targetHealthDegraded)
+	}
+
+	got, _ = updated.Update(targetProbeMsg{health: targetHealthOK})
+	updated = got.(model)
+	if updated.targetHealth != targetHealthDegraded {
+		t.Fatalf("probe overrode traffic health: got %q, want %q", updated.targetHealth, targetHealthDegraded)
 	}
 }
 
@@ -300,12 +401,12 @@ func TestInspectorRequestTabShowsOnlyRequestDetails(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"request inspector", "REQUEST", "Forwarded to", "http://127.0.0.1:9090/api/users?active=1", "Client", "Request headers", "User-Agent: curl/8.7.1", "l response"} {
+	for _, want := range []string{"request inspector", "REQUEST", "URL: GET /api/users?active=1", "Forwarded to", "http://127.0.0.1:9090/api/users?active=1", "Client", "REQUEST HEADERS", "User-Agent: curl/8.7.1", "l response"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("request inspector missing %q:\n%s", want, plain)
 		}
 	}
-	for _, notWant := range []string{"Response headers", "Server: upstream", "Response body"} {
+	for _, notWant := range []string{"RESPONSE HEADERS", "Server: upstream", "RESPONSE BODY"} {
 		if strings.Contains(plain, notWant) {
 			t.Fatalf("request inspector included response detail %q:\n%s", notWant, plain)
 		}
@@ -350,14 +451,39 @@ func TestInspectorResponseTabShowsOnlyResponseDetails(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"response inspector", "RESPONSE", "Target", "http://127.0.0.1:9090/api/users?active=1", "Upstream 7ms", "Response headers", "Content-Type: application/json", `"ok": true`, "h request"} {
+	for _, want := range []string{"response inspector", "RESPONSE", "URL: GET /api/users?active=1", "Target", "http://127.0.0.1:9090/api/users?active=1", "Upstream 7ms", "RESPONSE HEADERS", "Content-Type: application/json", `"ok": true`, "h request"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("response inspector missing %q:\n%s", want, plain)
 		}
 	}
-	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1", "Forwarded to"} {
+	for _, notWant := range []string{"REQUEST HEADERS", "User-Agent: curl/8.7.1", "Forwarded to"} {
 		if strings.Contains(plain, notWant) {
 			t.Fatalf("response inspector included request detail %q:\n%s", notWant, plain)
+		}
+	}
+}
+
+func TestInspectorHeaderDoesNotDuplicateSelectedRequestLine(t *testing.T) {
+	m := detailActionModel()
+	m.requests[0].Method = "PUT"
+	m.requests[0].RequestURI = "/exercise/resource/42"
+
+	lines := strings.Split(stripANSI(m.View()), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("view too short:\n%s", strings.Join(lines, "\n"))
+	}
+	if strings.Contains(lines[0], "/exercise/resource/42") {
+		t.Fatalf("top header duplicates selected request path: %q", lines[0])
+	}
+	if got := strings.TrimSpace(lines[2]); got != "REQUEST" {
+		t.Fatalf("first body line = %q, want REQUEST", got)
+	}
+	if got := strings.TrimSpace(lines[3]); got != "URL: PUT /exercise/resource/42" {
+		t.Fatalf("url line = %q, want URL: PUT /exercise/resource/42", got)
+	}
+	for _, line := range lines[3:] {
+		if strings.TrimSpace(line) == "PUT /exercise/resource/42" {
+			t.Fatalf("request line rendered as duplicate standalone row:\n%s", strings.Join(lines, "\n"))
 		}
 	}
 }
@@ -418,12 +544,12 @@ func TestInspectorRequestTabFormatsJSONBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{`Body`, `"name": "Alex"`} {
+	for _, want := range []string{`BODY`, `"name": "Alex"`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("formatted JSON body missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(plain, `Body [formatted json]`) {
+	if strings.Contains(plain, `BODY [formatted json]`) {
 		t.Fatalf("formatted JSON label still rendered:\n%s", plain)
 	}
 	if strings.Contains(plain, `{"name":"Alex"}`) {
@@ -490,10 +616,10 @@ func TestInspectorTogglesPlainJSONBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	if !strings.Contains(plain, `Body`) || !strings.Contains(plain, `{"name":"Alex"}`) {
+	if !strings.Contains(plain, `BODY`) || !strings.Contains(plain, `{"name":"Alex"}`) {
 		t.Fatalf("plain body missing raw JSON:\n%s", plain)
 	}
-	if strings.Contains(plain, `Body [plain]`) {
+	if strings.Contains(plain, `BODY [plain]`) {
 		t.Fatalf("plain body label still rendered:\n%s", plain)
 	}
 	if strings.Contains(plain, `"name": "Alex"`) {
@@ -555,18 +681,50 @@ func TestBodyViewShowsOnlyActiveInspectorTabBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"response body", "Body", `"ok": true`} {
+	for _, want := range []string{"response body", "BODY", `"ok": true`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("body view missing %q:\n%s", want, plain)
 		}
 	}
-	if strings.Contains(plain, "Body [formatted json]") {
+	if strings.Contains(plain, "BODY [formatted json]") {
 		t.Fatalf("body view still includes formatted label:\n%s", plain)
 	}
-	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1", `"name": "Alex"`} {
+	for _, notWant := range []string{"REQUEST HEADERS", "User-Agent: curl/8.7.1", `"name": "Alex"`} {
 		if strings.Contains(plain, notWant) {
 			t.Fatalf("body view included inactive request data %q:\n%s", notWant, plain)
 		}
+	}
+}
+
+func TestBodyViewAlignsContentLikeInspector(t *testing.T) {
+	m := detailActionModel()
+	m.width = 100
+	m.height = 24
+
+	inspector := strings.Split(stripANSI(m.View()), "\n")
+	if len(inspector) < 3 {
+		t.Fatalf("inspector view too short:\n%s", strings.Join(inspector, "\n"))
+	}
+	if strings.TrimSpace(inspector[1]) != "" {
+		t.Fatalf("inspector second line = %q, want blank", inspector[1])
+	}
+	if got := strings.TrimSpace(inspector[2]); got != "REQUEST" {
+		t.Fatalf("inspector first body line = %q, want REQUEST", got)
+	}
+	if got := strings.TrimSpace(inspector[3]); got != "URL: POST /api/users" {
+		t.Fatalf("inspector URL line = %q, want URL: POST /api/users", got)
+	}
+
+	m.mode = viewBody
+	body := strings.Split(stripANSI(m.View()), "\n")
+	if len(body) < 3 {
+		t.Fatalf("body view too short:\n%s", strings.Join(body, "\n"))
+	}
+	if strings.TrimSpace(body[1]) != "" {
+		t.Fatalf("body second line = %q, want blank", body[1])
+	}
+	if got := strings.TrimSpace(body[2]); got != "BODY" {
+		t.Fatalf("body first body line = %q, want BODY", got)
 	}
 }
 
@@ -690,6 +848,43 @@ func TestBodyViewShowsFullCapturedPreview(t *testing.T) {
 	lines := bodyViewLines(m.requests[0], m.width, true, inspectorTabRequest)
 	if len(lines) < 4 {
 		t.Fatalf("body view did not wrap long captured content, lines=%d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+}
+
+func TestInspectorPreviewShowsSmallBodiesAndTruncatesLargeBodies(t *testing.T) {
+	m := detailActionModel()
+	m.width = 120
+	m.height = 24
+	m.plainBody = true
+
+	small := strings.Repeat("a", 499)
+	m.requests[0].RequestPreview = client.BodyPreview{
+		Text:        small,
+		Size:        int64(len(small)),
+		Captured:    int64(len(small)),
+		ContentType: "text/plain",
+	}
+	plain := stripANSI(formatInspector(m.requests[0], m.width, m.now, m.plainBody, inspectorTabRequest))
+	if !strings.Contains(plain, small) {
+		t.Fatalf("small body was not fully rendered:\n%s", plain)
+	}
+	if strings.Contains(plain, "...") {
+		t.Fatalf("small body rendered truncation marker:\n%s", plain)
+	}
+
+	large := strings.Repeat("b", 501)
+	m.requests[0].RequestPreview = client.BodyPreview{
+		Text:        large,
+		Size:        int64(len(large)),
+		Captured:    int64(len(large)),
+		ContentType: "text/plain",
+	}
+	plain = stripANSI(formatInspector(m.requests[0], m.width, m.now, m.plainBody, inspectorTabRequest))
+	if strings.Contains(plain, large) {
+		t.Fatalf("large body was rendered fully:\n%s", plain)
+	}
+	if !strings.Contains(plain, strings.Repeat("b", 497)+"...") {
+		t.Fatalf("large body was not truncated at 500 chars:\n%s", plain)
 	}
 }
 

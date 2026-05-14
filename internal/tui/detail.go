@@ -61,11 +61,11 @@ func (m model) renderBody(width, height int) string {
 func formatBodyView(item requestItem, width int, plainBody bool, tab inspectorTab) string {
 	var b strings.Builder
 	if tab == inspectorTabResponse {
-		writePreview(&b, "Body", item.ResponsePreview, width, plainBody, bodyStateResponse(item), 0)
+		writePreview(&b, "BODY", item.ResponsePreview, width, plainBody, bodyStateResponse(item), 0)
 	} else {
-		writePreview(&b, "Body", item.RequestPreview, width, plainBody, "", 0)
+		writePreview(&b, "BODY", item.RequestPreview, width, plainBody, "", 0)
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(strings.TrimPrefix(b.String(), "\n"), "\n")
 }
 
 func bodyViewLines(item requestItem, width int, plainBody bool, tab inspectorTab) []string {
@@ -92,8 +92,7 @@ func formatRequestInspector(item requestItem, width int, now time.Time, plainBod
 	var b strings.Builder
 	b.WriteString(rowStyle.Render(headStyle.Render("REQUEST")))
 	b.WriteString("\n")
-	b.WriteString(rowStyle.Render(valStyle.Render(item.Method + " " + item.RequestURI)))
-	b.WriteString("\n")
+	writeMeta(&b, "URL", item.Method+" "+item.RequestURI)
 	if item.TargetURL != "" {
 		writeMeta(&b, "Forwarded to", item.TargetURL)
 	}
@@ -111,10 +110,10 @@ func formatRequestInspector(item requestItem, width int, now time.Time, plainBod
 	}
 
 	b.WriteString("\n")
-	b.WriteString(rowStyle.Render(headStyle.Render("Request headers")))
+	b.WriteString(rowStyle.Render(headStyle.Render("REQUEST HEADERS")))
 	b.WriteString("\n")
 	writeHeaders(&b, item.RequestHeader, 20)
-	writePreview(&b, "Body", item.RequestPreview, width, plainBody, "", max(20, width-4))
+	writePreview(&b, "BODY", item.RequestPreview, width, plainBody, "", 500)
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -122,6 +121,7 @@ func formatResponseInspector(item requestItem, width int, plainBody bool) string
 	var b strings.Builder
 	b.WriteString(rowStyle.Render(headStyle.Render("RESPONSE")))
 	b.WriteString("\n")
+	writeMeta(&b, "URL", item.Method+" "+item.RequestURI)
 	writeMeta(&b, "Status", styledStatus(item))
 	writeMeta(&b, "State", stateLabel(item.State))
 	if item.TargetURL != "" {
@@ -138,10 +138,10 @@ func formatResponseInspector(item requestItem, width int, plainBody bool) string
 	}
 
 	b.WriteString("\n")
-	b.WriteString(rowStyle.Render(headStyle.Render("Response headers")))
+	b.WriteString(rowStyle.Render(headStyle.Render("RESPONSE HEADERS")))
 	b.WriteString("\n")
 	writeHeaders(&b, item.ResponseHeader, 20)
-	writePreview(&b, "Body", item.ResponsePreview, width, plainBody, bodyStateResponse(item), max(20, width-4))
+	writePreview(&b, "BODY", item.ResponsePreview, width, plainBody, bodyStateResponse(item), 500)
 	return strings.TrimRight(b.String(), "\n")
 }
 
