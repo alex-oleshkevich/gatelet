@@ -224,7 +224,7 @@ func tunnelRows(data adminDashboardData) templ.Component {
 
 	rows := make([]templ.Component, 0, len(data.Tunnels))
 	for _, tunnel := range data.Tunnels {
-		publicURL := "https://" + tunnel.Name + "." + data.Domain
+		publicURL := publicTunnelURL(data.Domain, tunnel)
 		rows = append(rows, withChildren(table.Row(), join(
 			withChildren(table.Cell(), withChildren(badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "admin-badge"}), text(tunnel.Name))),
 			withChildren(table.Cell(table.CellProps{Class: "admin-mono"}), text(publicURL)),
@@ -238,6 +238,13 @@ func tunnelRows(data adminDashboardData) templ.Component {
 		)))
 	}
 	return join(rows...)
+}
+
+func publicTunnelURL(domain string, tunnel TunnelStats) string {
+	if tunnel.TunnelType == protocol.TunnelTypeTCP {
+		return fmt.Sprintf("tcp://%s.%s:%d", tunnel.Name, domain, tunnel.RemotePort)
+	}
+	return "https://" + tunnel.Name + "." + domain
 }
 
 func disconnectButton(token, name string) templ.Component {

@@ -15,9 +15,18 @@ func statusText(item requestItem) string {
 	if item.Error != "" {
 		return "ERR"
 	}
+	if item.Method == client.MethodTCP && item.State == client.EventRequestCompleted {
+		return "closed"
+	}
+	if item.Method == client.MethodTCP && item.State == client.EventRequestForwarding {
+		return "open"
+	}
 	if item.StatusCode == 0 {
 		if item.State == client.EventRequestQueued {
 			return "queued"
+		}
+		if item.State == client.EventTCPConnectionOpen {
+			return "open"
 		}
 		return "-"
 	}
@@ -26,6 +35,8 @@ func statusText(item requestItem) string {
 
 func stateLabel(state client.EventType) string {
 	switch state {
+	case client.EventTCPConnectionOpen:
+		return "open"
 	case client.EventRequestReceived:
 		return "received"
 	case client.EventRequestQueued:

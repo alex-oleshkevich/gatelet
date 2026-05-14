@@ -340,6 +340,14 @@ func TestPublicURLDefaultsDomainFromWebSocketServerURL(t *testing.T) {
 	}
 }
 
+func TestPublicTCPURLDefaultsDomainFromWebSocketServerURL(t *testing.T) {
+	got := PublicTCPURL("pg", "", "wss://tun.aresa.me/__gatelet/control", 15432)
+	want := "tcp://pg.tun.aresa.me:15432"
+	if got != want {
+		t.Fatalf("PublicTCPURL = %q, want %q", got, want)
+	}
+}
+
 func TestDefaultWebSocketControlPath(t *testing.T) {
 	tests := map[string]string{
 		"wss://tun.aresa.me":        "wss://tun.aresa.me/__gatelet/control",
@@ -803,6 +811,114 @@ func TestHandleStreamHoldsRequestsWhilePaused(t *testing.T) {
 	}
 }
 
+func TestTCPHandleStreamForwardsRawBytes(t *testing.T) {
+	target := listenTCPTestEcho(t)
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	requestLog := newRequestLogRecorder()
+	events := make(chan RequestEvent, 4)
+	go handleTCPStream(context.Background(), serverConn, Config{
+		Target:     target,
+		RequestLog: requestLog,
+		Events:     events,
+	})
+
+	header := protocol.TCPStreamHeader{RemoteAddr: "203.0.113.44:5555"}
+	if err := json.NewEncoder(clientConn).Encode(header); err != nil {
+		t.Fatalf("Encode header returned error: %v", err)
+	}
+	if _, err := clientConn.Write([]byte("ping\n")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+
+	buf := make([]byte, len("echo: ping\n"))
+	if _, err := io.ReadFull(clientConn, buf); err != nil {
+		t.Fatalf("ReadFull returned error: %v", err)
+	}
+	if string(buf) != "echo: ping\n" {
+		t.Fatalf("response = %q, want echo: ping", string(buf))
+	}
+	_ = clientConn.Close()
+
+	waitForLifecycleEvent(t, events, EventTCPConnectionOpen)
+	var completed RequestEvent
+	completedDeadline := time.After(time.Second)
+	for completed.Type != EventRequestCompleted {
+		select {
+		case event := <-events:
+			completed = event
+		case <-completedDeadline:
+			t.Fatal("timed out waiting for tcp completed event")
+		}
+	}
+	if completed.Method != MethodTCP {
+		t.Fatalf("Method = %q, want TCP", completed.Method)
+	}
+	if completed.TargetURL != target {
+		t.Fatalf("TargetURL = %q, want %q", completed.TargetURL, target)
+	}
+	if completed.RemoteAddr != "203.0.113.44:5555" {
+		t.Fatalf("RemoteAddr = %q, want 203.0.113.44:5555", completed.RemoteAddr)
+	}
+	if completed.RequestSize != int64(len("ping\n")) || completed.ResponseSize != int64(len("echo: ping\n")) {
+		t.Fatalf("sizes = %d/%d, want request/response bytes", completed.RequestSize, completed.ResponseSize)
+	}
+
+	logDeadline := time.Now().Add(time.Second)
+	for time.Now().Before(logDeadline) {
+		if strings.Contains(requestLog.String(), "TCP 203.0.113.44 ->") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("tcp connection log missing: %q", requestLog.String())
+}
+
+func TestTCPHandleStreamHoldsConnectionWhilePaused(t *testing.T) {
+	target := listenTCPTestEcho(t)
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	events := make(chan RequestEvent, 8)
+	pause := NewPauseController()
+	pause.SetPaused(true)
+	go handleTCPStream(context.Background(), serverConn, Config{
+		Target:          target,
+		Events:          events,
+		PauseController: pause,
+		PauseTimeout:    time.Second,
+	})
+
+	if err := json.NewEncoder(clientConn).Encode(protocol.TCPStreamHeader{RemoteAddr: "203.0.113.44:5555"}); err != nil {
+		t.Fatalf("Encode header returned error: %v", err)
+	}
+
+	waitForLifecycleEvent(t, events, EventRequestQueued)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := clientConn.Write([]byte("ping\n"))
+		writeDone <- err
+	}()
+	select {
+	case err := <-writeDone:
+		t.Fatalf("tcp payload was forwarded while paused, write err = %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	pause.SetPaused(false)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("Write returned error after resume: %v", err)
+	}
+	buf := make([]byte, len("echo: ping\n"))
+	if _, err := io.ReadFull(clientConn, buf); err != nil {
+		t.Fatalf("ReadFull returned error after resume: %v", err)
+	}
+	if string(buf) != "echo: ping\n" {
+		t.Fatalf("response = %q, want echo: ping", string(buf))
+	}
+}
+
 func unavailableLocalTarget(t *testing.T) string {
 	t.Helper()
 
@@ -815,6 +931,37 @@ func unavailableLocalTarget(t *testing.T) string {
 		t.Fatalf("Close returned error: %v", err)
 	}
 	return "http://" + addr
+}
+
+func listenTCPTestEcho(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = ln.Close()
+	})
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				data, err := bufio.NewReader(conn).ReadString('\n')
+				if err != nil {
+					return
+				}
+				_, _ = fmt.Fprintf(conn, "echo: %s", data)
+			}()
+		}
+	}()
+
+	return ln.Addr().String()
 }
 
 func completeTestHandshake(t *testing.T, conn net.Conn, token string) {

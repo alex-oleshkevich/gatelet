@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -149,6 +150,61 @@ func TestListViewShowsApprovedColumns(t *testing.T) {
 		if strings.Contains(plain, notWant) {
 			t.Fatalf("list view included %q:\n%s", notWant, plain)
 		}
+	}
+}
+
+func TestListViewShowsTCPConnections(t *testing.T) {
+	now := time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC)
+	m := model{
+		url:    "tcp://pg.tun.example.com:15432",
+		status: "online",
+		width:  120,
+		height: 16,
+		now:    now,
+		index:  make(map[uint64]int),
+	}
+
+	m.applyEvent(client.RequestEvent{
+		ID:         42,
+		Type:       client.EventTCPConnectionOpen,
+		Time:       now.Add(-3 * time.Second),
+		Method:     client.MethodTCP,
+		RequestURI: "localhost:5432",
+		TargetURL:  "localhost:5432",
+		RemoteAddr: "203.0.113.44:5555",
+	})
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"TCP", "localhost:5432", "open", "0B", "203.0.113.44", "3s"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("View missing %q:\n%s", want, plain)
+		}
+	}
+}
+
+func TestTCPDetailShowsForwardedTargetAndByteCounts(t *testing.T) {
+	now := time.Date(2026, 5, 14, 18, 0, 0, 0, time.UTC)
+	item := requestItem{
+		ID:           42,
+		Method:       client.MethodTCP,
+		RequestURI:   "203.0.113.44:5555",
+		TargetURL:    "localhost:5432",
+		RemoteAddr:   "203.0.113.44:5555",
+		RequestSize:  5,
+		ResponseSize: 11,
+		State:        client.EventRequestCompleted,
+		StartedAt:    now.Add(-10 * time.Second),
+		Duration:     25 * time.Millisecond,
+	}
+
+	plain := stripANSI(formatRequestInspector(item, 100, now, false))
+	for _, want := range []string{"TCP CONNECTION", "Remote: 203.0.113.44", "Forwarded to: localhost:5432", "State: completed", "Bytes In: 5B", "Bytes Out: 11B", "Duration: 25ms"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("detail missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "REQUEST HEADERS") {
+		t.Fatalf("TCP detail should not render HTTP headers:\n%s", plain)
 	}
 }
 
@@ -310,7 +366,7 @@ func TestTargetHealthProbeMapsReachability(t *testing.T) {
 	}))
 	defer okServer.Close()
 
-	if got := checkTargetHealth(okServer.URL); got != targetHealthOK {
+	if got := checkTargetHealth(okServer.URL, false); got != targetHealthOK {
 		t.Fatalf("ok target health = %q, want %q", got, targetHealthOK)
 	}
 
@@ -319,12 +375,34 @@ func TestTargetHealthProbeMapsReachability(t *testing.T) {
 	}))
 	defer degradedServer.Close()
 
-	if got := checkTargetHealth(degradedServer.URL); got != targetHealthDegraded {
+	if got := checkTargetHealth(degradedServer.URL, false); got != targetHealthDegraded {
 		t.Fatalf("degraded target health = %q, want %q", got, targetHealthDegraded)
 	}
 
-	if got := checkTargetHealth("ftp://127.0.0.1:1"); got != targetHealthDown {
+	if got := checkTargetHealth("ftp://127.0.0.1:1", false); got != targetHealthDown {
 		t.Fatalf("unsupported target health = %q, want %q", got, targetHealthDown)
+	}
+}
+
+func TestTargetHealthProbeSupportsTCP(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}()
+
+	if got := checkTargetHealth(ln.Addr().String(), true); got != targetHealthOK {
+		t.Fatalf("tcp target health = %q, want %q", got, targetHealthOK)
+	}
+	if got := checkTargetHealth("http://127.0.0.1:1", true); got != targetHealthDown {
+		t.Fatalf("unsupported tcp target health = %q, want %q", got, targetHealthDown)
 	}
 }
 

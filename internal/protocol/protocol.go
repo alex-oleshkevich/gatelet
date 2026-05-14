@@ -15,11 +15,14 @@ const (
 	CurrentProtocolVersion = 1
 	DefaultClientVersion   = "gatelet-dev"
 	DefaultTokenID         = "default"
+	TunnelTypeHTTP         = "http"
+	TunnelTypeTCP          = "tcp"
 
 	HandshakeOK                  = "OK\n"
 	HandshakeErr                 = "ERR authentication failed\n"
 	HandshakeNameNotAllowed      = "ERR tunnel name not allowed\n"
 	HandshakeNameInUse           = "ERR tunnel name already in use\n"
+	HandshakeRemotePortInUse     = "ERR remote port unavailable\n"
 	HandshakeUnsupportedProtocol = "ERR unsupported protocol version\n"
 )
 
@@ -27,6 +30,8 @@ type ClientHello struct {
 	Name            string `json:"name"`
 	ProtocolVersion int    `json:"protocol_version"`
 	ClientVersion   string `json:"client_version"`
+	TunnelType      string `json:"tunnel_type,omitempty"`
+	RemotePort      int    `json:"remote_port,omitempty"`
 }
 
 type UnsupportedProtocolError struct {
@@ -39,6 +44,10 @@ func (e UnsupportedProtocolError) Error() string {
 
 type ServerChallenge struct {
 	Nonce string `json:"nonce"`
+}
+
+type TCPStreamHeader struct {
+	RemoteAddr string `json:"remote_addr"`
 }
 
 type ClientChallengeResponse struct {
@@ -74,6 +83,21 @@ func ParseClientHello(data []byte) (ClientHello, error) {
 	}
 	if hello.ClientVersion == "" {
 		return ClientHello{}, errors.New("client version is required")
+	}
+	if hello.TunnelType == "" {
+		hello.TunnelType = TunnelTypeHTTP
+	}
+	switch hello.TunnelType {
+	case TunnelTypeHTTP:
+		if hello.RemotePort != 0 {
+			return ClientHello{}, errors.New("remote port is only valid for tcp tunnels")
+		}
+	case TunnelTypeTCP:
+		if hello.RemotePort < 1 || hello.RemotePort > 65535 {
+			return ClientHello{}, errors.New("tcp remote port must be between 1 and 65535")
+		}
+	default:
+		return ClientHello{}, fmt.Errorf("unsupported tunnel type %q", hello.TunnelType)
 	}
 
 	return hello, nil

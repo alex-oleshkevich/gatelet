@@ -44,8 +44,9 @@ func Run(ctx context.Context, config client.Config) error {
 		events:       events,
 		clientErr:    errs,
 		pause:        pause,
-		url:          client.PublicURL(config.Name, config.Domain, config.ServerAddr),
+		url:          tuiPublicURL(config),
 		target:       config.Target,
+		tcp:          config.TCP,
 		status:       "connecting",
 		targetHealth: targetHealthUnknown,
 		now:          time.Now(),
@@ -55,6 +56,13 @@ func Run(ctx context.Context, config client.Config) error {
 
 	_, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	return err
+}
+
+func tuiPublicURL(config client.Config) string {
+	if config.TCP {
+		return client.PublicTCPURL(config.Name, config.Domain, config.ServerAddr, config.RemotePort)
+	}
+	return client.PublicURL(config.Name, config.Domain, config.ServerAddr)
 }
 
 func waitEvent(events <-chan client.RequestEvent) tea.Cmd {

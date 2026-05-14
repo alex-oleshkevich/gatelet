@@ -78,9 +78,42 @@ func TestParseClientHelloValidatesName(t *testing.T) {
 	if hello.Name != "alex" {
 		t.Fatalf("Name = %q, want %q", hello.Name, "alex")
 	}
+	if hello.TunnelType != TunnelTypeHTTP {
+		t.Fatalf("TunnelType = %q, want %q", hello.TunnelType, TunnelTypeHTTP)
+	}
 
 	if _, err := ParseClientHello([]byte(`{"name":"alex.dev"}`)); err == nil {
 		t.Fatal("ParseClientHello accepted invalid name")
+	}
+}
+
+func TestParseClientHelloAcceptsTCPTunnel(t *testing.T) {
+	hello, err := ParseClientHello([]byte(`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp","remote_port":15432}`))
+	if err != nil {
+		t.Fatalf("ParseClientHello returned error: %v", err)
+	}
+	if hello.TunnelType != TunnelTypeTCP {
+		t.Fatalf("TunnelType = %q, want %q", hello.TunnelType, TunnelTypeTCP)
+	}
+	if hello.RemotePort != 15432 {
+		t.Fatalf("RemotePort = %d, want 15432", hello.RemotePort)
+	}
+}
+
+func TestParseClientHelloRejectsInvalidTCPTunnel(t *testing.T) {
+	tests := []string{
+		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp"}`,
+		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp","remote_port":70000}`,
+		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"http","remote_port":15432}`,
+		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"udp","remote_port":15432}`,
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			if _, err := ParseClientHello([]byte(input)); err == nil {
+				t.Fatal("ParseClientHello returned nil error")
+			}
+		})
 	}
 }
 

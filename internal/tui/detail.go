@@ -89,6 +89,9 @@ func formatRequestInspector(item requestItem, width int, now time.Time, plainBod
 	if now.IsZero() {
 		now = time.Now()
 	}
+	if item.Method == client.MethodTCP {
+		return formatTCPInspector(item, now)
+	}
 	var b strings.Builder
 	b.WriteString(rowStyle.Render(headStyle.Render("REQUEST")))
 	b.WriteString("\n")
@@ -114,6 +117,31 @@ func formatRequestInspector(item requestItem, width int, now time.Time, plainBod
 	b.WriteString("\n")
 	writeHeaders(&b, item.RequestHeader, 20)
 	writePreview(&b, "BODY", item.RequestPreview, width, plainBody, "", 500)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatTCPInspector(item requestItem, now time.Time) string {
+	var b strings.Builder
+	b.WriteString(rowStyle.Render(headStyle.Render("TCP CONNECTION")))
+	b.WriteString("\n")
+	writeMeta(&b, "Remote", remoteIP(item.RemoteAddr))
+	if item.TargetURL != "" {
+		writeMeta(&b, "Forwarded to", item.TargetURL)
+	}
+	writeMeta(&b, "State", stateLabel(item.State))
+	writeMeta(&b, "Started", item.StartedAt.Format("2006-01-02 15:04:05"))
+	writeMeta(&b, "Age", relativeAge(now, item.StartedAt))
+	writeMeta(&b, "Bytes In", formatBytes(item.RequestSize))
+	writeMeta(&b, "Bytes Out", formatBytes(item.ResponseSize))
+	if item.Duration > 0 {
+		writeMeta(&b, "Duration", item.Duration.Round(time.Millisecond).String())
+	}
+	if item.ErrorKind != "" {
+		writeMeta(&b, "Error Kind", errorKindLabel(item.ErrorKind))
+	}
+	if item.Error != "" {
+		writeMeta(&b, "Error", status5xxStyle.Render(item.Error))
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 

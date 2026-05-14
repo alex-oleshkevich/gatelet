@@ -1,27 +1,30 @@
 # Gatelet
 
-Gatelet exposes a local HTTP service through a stable public subdomain. It is a small ngrok-style tunnel with two binaries:
+Gatelet exposes a local HTTP or TCP service through a stable public endpoint. It is a small ngrok-style tunnel with two binaries:
 
 | Binary | Purpose |
 |---|---|
-| `gateletd` | Public relay server that accepts tunnel clients and HTTP traffic |
-| `gatelet` | Local client that connects to `gateletd` and forwards requests to a local service |
+| `gateletd` | Public relay server that accepts tunnel clients, HTTP traffic, and raw TCP traffic |
+| `gatelet` | Local client that connects to `gateletd` and forwards requests or TCP streams to a local service |
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     Browser[Browser] -->|HTTP Host: demo.example.com| Relay[gateletd]
-    Relay -->|yamux stream over TLS control connection| Client[gatelet]
-    Client -->|HTTP| Local[localhost:3000]
-    Local --> Client --> Relay --> Browser
+    TCPClient[TCP client] -->|tcp.example.com:15432| Relay
+    Relay -->|yamux streams over control connection| Client[gatelet]
+    Client -->|HTTP| WebLocal[localhost:3000]
+    Client -->|TCP| TCPLocal[localhost:5432]
+    WebLocal --> Client --> Relay --> Browser
+    TCPLocal --> Client --> Relay --> TCPClient
 ```
 
-`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `demo`. The control connection can use raw TCP/TLS or WebSocket over the HTTP listener at `/__gatelet/control`. When `gateletd` receives an HTTP request for `demo.example.com`, it opens a stream over the existing tunnel connection and forwards the request to the local client.
+`gatelet` opens an outbound control connection to `gateletd`, sends its protocol and client version, authenticates with a token ID plus challenge-response handshake, and registers a tunnel name such as `demo`. The control connection can use raw TCP/TLS or WebSocket over the HTTP listener at `/__gatelet/control`. When `gateletd` receives an HTTP request for `demo.example.com`, or a TCP connection on a registered remote port, it opens a stream over the existing tunnel connection and forwards it to the local client.
 
 ## Current Scope
 
-Gatelet currently supports HTTP tunneling only. Public HTTP TLS termination, automatic certificates, persistent account storage, rate limits, and raw TCP forwarding are not implemented yet.
+Gatelet supports HTTP tunneling and raw TCP tunneling. Public HTTP TLS termination, automatic certificates, persistent account storage, and rate limits are not implemented yet.
 
 ## Requirements
 
@@ -121,6 +124,21 @@ curl -H 'Host: demo.example.test' http://127.0.0.1:8080/
 
 The response should come from the local web service.
 
+For raw TCP forwarding, start any local TCP service and request a public port:
+
+```sh
+gatelet pg localhost:5432 --tcp --remote-port 15432 --server wss://example.com --token "$GATELET_TOKEN"
+```
+
+The client prints a TCP endpoint:
+
+```text
+url tcp://pg.example.com:15432
+target localhost:5432
+```
+
+TCP payloads are passed through unchanged. If the local service speaks TLS, TLS stays end-to-end between the public TCP client and the local service.
+
 ## Public Server Setup
 
 Run `gateletd` on a public server behind an HTTPS reverse proxy:
@@ -193,7 +211,7 @@ export GATELET_TOKEN='replace-with-a-long-random-token'
 docker compose -f compose.example.yml up -d --build
 ```
 
-`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. For WebSocket control, point clients at `ws://localhost:8080`; the client defaults the path to `/__gatelet/control`. For raw TCP control on `4443`, use `--control-plaintext` unless you configure a control TLS certificate.
+`compose.example.yml` uses Docker Compose `ports` and publishes the relay on local host ports `8080` and `4443`. For WebSocket control, point clients at `ws://localhost:8080`; the client defaults the path to `/__gatelet/control`. For raw TCP control on `4443`, use `--control-plaintext` unless you configure a control TLS certificate. To test TCP tunnels through Docker Compose, publish the same host/container port you pass as `--remote-port`.
 
 For Uncloud, deploy the compose file with `uc` from the host or project where you manage services:
 
@@ -208,6 +226,7 @@ The ignored `compose.yml` uses Uncloud `x-ports`. In Uncloud, public HTTPS traff
 | `*.tun.example.com/https` | `8080` | Public HTTPS tunnel traffic via Caddy |
 | `tun.example.com/__gatelet/control` | `8080` | WebSocket client control connection |
 | `4443/tcp@host` | `4443` | Optional raw TCP client control connection |
+| `15432/tcp@host` | `15432` | Example raw TCP tunnel port |
 
 ### Caddy and Uncloud Quirks
 
@@ -222,13 +241,16 @@ services:
       - "tun.example.com:8080/https"
       - "*.tun.example.com:8080/https"
       - "4443:4443/tcp@host"
+      - "15432:15432/tcp@host"
 ```
 
 The base host is required for WebSocket control at `wss://tun.example.com/__gatelet/control`. The wildcard host is required for tunnel traffic such as `https://demo.tun.example.com`. If one of those hosts is missing, clients can fail with TLS errors such as `tls: internal error` before the request reaches `gateletd`.
 
+TCP tunnel traffic bypasses Caddy. Publish each remote TCP port with Uncloud host mode, for example `15432:15432/tcp@host`, and point TCP clients at `pg.tun.example.com:15432` or another DNS-only hostname that resolves to the Uncloud machine. Normal Caddy HTTPS routes cannot inspect or route raw TCP payloads.
+
 Do not mix Docker Compose `ports` and Uncloud `x-ports` on the same service. Uncloud rejects a service that specifies both. For local Docker Compose, use `compose.example.yml`; for Uncloud deployment, use an ignored deployment-specific `compose.yml` with `x-ports`.
 
-Do not bind `80:80` or `443:443` from the Gatelet service when Uncloud Caddy is running. Those host ports belong to Caddy. If you need raw TCP control, expose only `4443:4443/tcp@host`; otherwise prefer WebSocket control over `443` and omit the raw control port.
+Do not bind `80:80` or `443:443` from the Gatelet service when Uncloud Caddy is running. Those host ports belong to Caddy. If you need raw TCP control, expose only `4443:4443/tcp@host`; otherwise prefer WebSocket control over `443` and omit the raw control port. For TCP tunnels, use high application ports such as `15432`, `16379`, or an agreed range, and publish those ports explicitly with `@host`.
 
 When using Uncloud's shared Caddy service with Cloudflare DNS challenges, the Caddy app needs the Cloudflare-enabled image and a global Caddyfile like:
 
@@ -257,6 +279,8 @@ For `tun.example.com` on Cloudflare, create records in the `example.com` zone:
 |---|---|---|---|
 | `A` or `AAAA` | `tun` | Public server IP | Proxied for WebSocket-only control; DNS only if exposing raw `4443` |
 | `A` or `AAAA` | `*.tun` | Public server IP | Proxied for HTTPS tunnels; DNS only if bypassing Cloudflare |
+| `A` or `AAAA` | `tcp.tun` | Public server IP | DNS only for raw TCP tunnel ports |
+| `A` or `AAAA` | `*.tcp.tun` | Public server IP | DNS only for named raw TCP tunnel ports |
 
 If Uncloud gives you a hostname instead of a stable IP address, use `CNAME` records instead:
 
@@ -264,8 +288,10 @@ If Uncloud gives you a hostname instead of a stable IP address, use `CNAME` reco
 |---|---|---|---|
 | `CNAME` | `tun` | Uncloud hostname | Proxied for WebSocket-only control; DNS only if exposing raw `4443` |
 | `CNAME` | `*.tun` | Uncloud hostname | Proxied for HTTPS tunnels; DNS only if bypassing Cloudflare |
+| `CNAME` | `tcp.tun` | Uncloud hostname | DNS only for raw TCP tunnel ports |
+| `CNAME` | `*.tcp.tun` | Uncloud hostname | DNS only for named raw TCP tunnel ports |
 
-With WebSocket control, Cloudflare can proxy normal HTTPS/WebSocket traffic on port `443` to your reverse proxy. Raw TCP control on `4443` is not handled by the standard Cloudflare HTTP proxy; it requires DNS-only, Cloudflare Spectrum, Cloudflare Tunnel, or another TCP proxy.
+With WebSocket control, Cloudflare can proxy normal HTTPS/WebSocket traffic on port `443` to your reverse proxy. Raw TCP control on `4443` and raw TCP tunnel ports such as `15432` are not handled by the standard Cloudflare HTTP proxy; they require DNS-only records, Cloudflare Spectrum, Cloudflare Tunnel, or another TCP proxy.
 
 Cloudflare dashboard path:
 
@@ -332,13 +358,15 @@ gatelet demo http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_
 | positional name | Yes | Tunnel name, for example `demo` |
 | `--name` | Alternative | Tunnel name if not using the positional form |
 | `--server` | Alternative | `gateletd` control address or WebSocket URL, for example `wss://example.com`; WebSocket URLs without a path default to `/__gatelet/control`; prefer `GATELET_SERVER` for repeated local use |
-| positional target | Yes | Local HTTP target, with or without `http://` |
+| positional target | Yes | Local HTTP target, with or without `http://`; for `--tcp`, use `host:port` or `tcp://host:port` |
 | `--to` | Alternative | Compatibility alias for the positional target |
 | `--token` | Alternative | Authentication token; prefer `GATELET_TOKEN` in production |
 | `--token-id` | No | Token ID sent in the auth handshake; defaults to `default` when omitted |
 | `--domain` | No | Public tunnel domain for display, inferred from `--server` when empty |
 | `--log-format` | No | Plain-mode output format: `text`, `json`, or `jsonl`; default `text` |
 | `--preview-size` | No | Maximum request/response body preview bytes captured for logs and TUI; default `4096` |
+| `--tcp` | No | Forward raw TCP instead of HTTP |
+| `--remote-port` | Required with `--tcp` | Public TCP port that `gateletd` binds for this tunnel |
 | `--control-plaintext` | No | Disable TLS for raw TCP control; ignored for `ws://` and `wss://` URLs |
 | `--control-ca` | No | PEM CA bundle used to verify raw TLS or `wss://` control server certificates |
 | `--control-server-name` | No | Override the TLS server name used for raw TLS or `wss://` control certificate verification |

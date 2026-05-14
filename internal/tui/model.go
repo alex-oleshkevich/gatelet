@@ -66,6 +66,7 @@ type model struct {
 
 	url          string
 	target       string
+	tcp          bool
 	captureDir   string
 	status       string
 	targetHealth targetHealth
@@ -92,7 +93,7 @@ type model struct {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(waitEvent(m.events), waitClient(m.clientErr), tick(), probeTargetHealth(m.target))
+	return tea.Batch(waitEvent(m.events), waitClient(m.clientErr), tick(), probeTargetHealth(m.target, m.tcp))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -116,7 +117,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.HasPrefix(m.message, "reconnecting:") {
 				m.message = "reconnected"
 			}
-			return m, tea.Batch(waitEvent(m.events), probeTargetHealth(m.target))
+			return m, tea.Batch(waitEvent(m.events), probeTargetHealth(m.target, m.tcp))
 		case client.EventTunnelReconnecting:
 			m.status = "reconnecting"
 			if event.Duration > 0 {
@@ -486,7 +487,7 @@ func (m model) visibleRequests() []requestItem {
 	terms := strings.Fields(strings.ToLower(m.filter))
 	var out []requestItem
 	for _, item := range m.requests {
-		haystack := strings.ToLower(item.Method + " " + item.RequestURI + " " + item.Host + " " + remoteIP(item.RemoteAddr) + " " + fmt.Sprint(item.StatusCode) + " " + item.Error)
+		haystack := strings.ToLower(item.Method + " " + item.RequestURI + " " + item.TargetURL + " " + item.Host + " " + remoteIP(item.RemoteAddr) + " " + fmt.Sprint(item.StatusCode) + " " + item.Error)
 		matched := true
 		for _, term := range terms {
 			if !strings.Contains(haystack, term) {

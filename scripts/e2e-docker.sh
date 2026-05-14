@@ -7,11 +7,13 @@ token="${GATELET_E2E_TOKEN:-e2e-token-$(date +%s)}"
 admin_user="${GATELET_E2E_ADMIN_USER:-operator}"
 admin_password="${GATELET_E2E_ADMIN_PASSWORD:-admin-secret}"
 target="gatelet-e2e-target-$$"
+tcp_target="gatelet-e2e-tcp-target-$$"
 daemon="gatelet-e2e-daemon-$$"
 client="gatelet-e2e-client-$$"
+tcp_client="gatelet-e2e-tcp-client-$$"
 
 cleanup() {
-  docker rm -f "$client" "$daemon" "$target" >/dev/null 2>&1 || true
+  docker rm -f "$tcp_client" "$client" "$daemon" "$tcp_target" "$target" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -46,12 +48,27 @@ wait_for_http() {
   return 1
 }
 
+contains() {
+  local haystack="$1"
+  local needle="$2"
+  case "$haystack" in
+    *"$needle"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 docker build -t "$image" .
 docker network create "$network" >/dev/null
 
 docker run -d --name "$target" --network "$network" hashicorp/http-echo:1.0 \
   -listen=:5678 \
   -text='gatelet e2e ok' >/dev/null
+
+docker run -d --name "$tcp_target" --network "$network" \
+  -v "$PWD:/src" \
+  -w /src \
+  golang:1.24-alpine \
+  go run ./scripts/e2e-tcp-echo -listen :6789 >/dev/null
 
 docker run -d --name "$daemon" --network "$network" \
   -e GATELET_TOKEN="$token" \
@@ -63,6 +80,7 @@ docker run -d --name "$daemon" --network "$network" \
   --control :4443 >/dev/null
 
 wait_for_log "$daemon" "gateletd listening"
+wait_for_log "$tcp_target" "tcp echo listening"
 
 docker run -d --name "$client" --network "$network" \
   -e GATELET_TOKEN="$token" \
@@ -73,7 +91,19 @@ docker run -d --name "$client" --network "$network" \
   --server "ws://$daemon:8080" \
   --domain e2e.test >/dev/null
 
+docker run -d --name "$tcp_client" --network "$network" \
+  -e GATELET_TOKEN="$token" \
+  --entrypoint gatelet \
+  "$image" \
+  pg \
+  "$tcp_target:6789" \
+  --tcp \
+  --remote-port 15432 \
+  --server "ws://$daemon:8080" \
+  --domain e2e.test >/dev/null
+
 wait_for_log "$daemon" "tunnel connected"
+wait_for_log "$daemon" "name=pg"
 wait_for_http "http://$daemon:8080/" "alex.e2e.test"
 
 admin_status="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
@@ -92,14 +122,17 @@ fi
 
 status_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
   -fsS -u "$admin_user:$admin_password" -H 'Host: e2e.test' "http://$daemon:8080/__gatelet/status")"
-if [[ "$status_body" != *'"active_tunnels":1'* ]]; then
-  echo "status endpoint missing active tunnel count: $status_body" >&2
+if ! contains "$status_body" '"active_tunnels":2' ||
+  ! contains "$status_body" '"name":"pg"' ||
+  ! contains "$status_body" '"tunnel_type":"tcp"' ||
+  ! contains "$status_body" '"remote_port":15432'; then
+  echo "status endpoint missing active HTTP/TCP tunnel data: $status_body" >&2
   exit 1
 fi
 
 metrics_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
   -fsS -u "$admin_user:$admin_password" -H 'Host: e2e.test' "http://$daemon:8080/metrics")"
-if [[ "$metrics_body" != *"gatelet_active_tunnels 1"* ]]; then
+if [[ "$metrics_body" != *"gatelet_active_tunnels 2"* ]]; then
   echo "metrics endpoint missing active tunnel count" >&2
   exit 1
 fi
@@ -120,6 +153,17 @@ fi
 
 wait_for_log "$client" "GET /hello?name=alex 200 0B"
 wait_for_log "$client" "POST /post 200 7B"
+
+tcp_body="$(docker run --rm --network "$network" \
+  -v "$PWD:/src" \
+  -w /src \
+  golang:1.24-alpine \
+  go run ./scripts/e2e-tcp-client -addr "$daemon:15432")"
+if [[ "$tcp_body" != "echo: ping" ]]; then
+  echo "unexpected TCP body: $tcp_body" >&2
+  exit 1
+fi
+wait_for_log "$tcp_client" "TCP "
 
 status="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
   -sS -o /dev/null -w '%{http_code}' -H 'Host: missing.e2e.test' "http://$daemon:8080/")"
