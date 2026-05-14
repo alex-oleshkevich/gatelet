@@ -32,6 +32,8 @@ func stateLabel(state client.EventType) string {
 		return "queued"
 	case client.EventRequestForwarding:
 		return "forwarding"
+	case client.EventResponseStarted:
+		return "streaming"
 	case client.EventRequestCompleted:
 		return "completed"
 	case client.EventRequestFailed:
@@ -194,10 +196,6 @@ func isOld(now, started time.Time) bool {
 
 func formatBytes(size int64) string {
 	return client.FormatBytes(size)
-}
-
-func previewLimitForDisplay() int64 {
-	return int64(client.DefaultPreviewLimit)
 }
 
 func min(a, b int) int {

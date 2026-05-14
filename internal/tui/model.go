@@ -15,8 +15,15 @@ type viewMode int
 
 const (
 	viewList viewMode = iota
-	viewDetail
+	viewInspector
 	viewBody
+)
+
+type inspectorTab int
+
+const (
+	inspectorTabRequest inspectorTab = iota
+	inspectorTabResponse
 )
 
 type requestItem struct {
@@ -65,6 +72,7 @@ type model struct {
 	message      string
 	paused       bool
 	mode         viewMode
+	inspectorTab inspectorTab
 	filtering    bool
 	filter       string
 	plainBody    bool
@@ -136,10 +144,10 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		switch m.mode {
 		case viewBody:
-			m.mode = viewDetail
+			m.mode = viewInspector
 			m.bodyScroll = 0
 			m.message = ""
-		case viewDetail:
+		case viewInspector:
 			m.mode = viewList
 			m.detailScroll = 0
 			m.message = ""
@@ -153,20 +161,33 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.mode == viewList && len(m.visibleRequests()) > 0 {
-			m.mode = viewDetail
+			m.mode = viewInspector
+			m.inspectorTab = inspectorTabRequest
 			m.detailScroll = 0
 			m.message = ""
 		}
 	case "b":
 		switch m.mode {
-		case viewDetail:
+		case viewInspector:
 			m.mode = viewBody
 			m.bodyScroll = 0
 			m.message = ""
 		case viewBody:
-			m.mode = viewDetail
+			m.mode = viewInspector
 			m.bodyScroll = 0
 			m.message = ""
+		}
+	case "tab", "l", "right":
+		if m.mode == viewInspector || m.mode == viewBody {
+			m.inspectorTab = inspectorTabResponse
+			m.detailScroll = 0
+			m.bodyScroll = 0
+		}
+	case "h", "left":
+		if m.mode == viewInspector || m.mode == viewBody {
+			m.inspectorTab = inspectorTabRequest
+			m.detailScroll = 0
+			m.bodyScroll = 0
 		}
 	case "/":
 		if m.mode == viewList {
@@ -180,15 +201,15 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.message = "copied " + m.url
 		}
 	case "y":
-		if m.mode == viewDetail {
+		if m.mode == viewInspector {
 			m.copySelectedCurl()
 		}
 	case "e":
-		if m.mode == viewDetail {
+		if m.mode == viewInspector {
 			m.exportSelectedCurl()
 		}
 	case "r":
-		if m.mode == viewDetail {
+		if m.mode == viewInspector {
 			return m.replaySelectedRequest()
 		}
 	case "x":
@@ -202,7 +223,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case viewBody:
 			m.bodyScroll--
-		case viewDetail:
+		case viewInspector:
 			m.detailScroll--
 		default:
 			if m.selected > 0 {
@@ -213,7 +234,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case viewBody:
 			m.bodyScroll++
-		case viewDetail:
+		case viewInspector:
 			m.detailScroll++
 		default:
 			if m.selected < len(m.visibleRequests())-1 {
@@ -224,14 +245,14 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case viewBody:
 			m.bodyScroll -= max(1, m.bodyHeight())
-		case viewDetail:
+		case viewInspector:
 			m.detailScroll -= max(1, m.detailHeight())
 		}
 	case "pgdown", "d", " ":
 		switch m.mode {
 		case viewBody:
 			m.bodyScroll += max(1, m.bodyHeight())
-		case viewDetail:
+		case viewInspector:
 			m.detailScroll += max(1, m.detailHeight())
 		}
 	case "f", "F":
@@ -239,7 +260,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case viewBody:
 			m.plainBody = !m.plainBody
 			m.bodyScroll = 0
-		case viewDetail:
+		case viewInspector:
 			m.plainBody = !m.plainBody
 			m.detailScroll = 0
 		}
@@ -247,7 +268,7 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case viewBody:
 			m.bodyScroll = 0
-		case viewDetail:
+		case viewInspector:
 			m.detailScroll = 0
 		default:
 			m.selected = 0
@@ -456,7 +477,7 @@ func (m *model) clampSelection() {
 }
 
 func (m *model) clampDetailScroll() {
-	if m.mode != viewDetail {
+	if m.mode != viewInspector {
 		return
 	}
 	item, ok := m.selectedRequest()
@@ -464,7 +485,7 @@ func (m *model) clampDetailScroll() {
 		m.detailScroll = 0
 		return
 	}
-	lines := strings.Split(strings.TrimRight(formatDetail(item, max(20, m.width), m.now, m.plainBody), "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(formatInspector(item, max(20, m.width), m.now, m.plainBody, m.inspectorTab), "\n"), "\n")
 	maxScroll := max(0, len(lines)-m.detailHeight())
 	if m.detailScroll > maxScroll {
 		m.detailScroll = maxScroll
@@ -483,7 +504,7 @@ func (m *model) clampBodyScroll() {
 		m.bodyScroll = 0
 		return
 	}
-	lines := strings.Split(strings.TrimRight(formatBodyView(item, max(20, m.width), m.plainBody), "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(formatBodyView(item, max(20, m.width), m.plainBody, m.inspectorTab), "\n"), "\n")
 	maxScroll := max(0, len(lines)-m.bodyHeight())
 	if m.bodyScroll > maxScroll {
 		m.bodyScroll = maxScroll

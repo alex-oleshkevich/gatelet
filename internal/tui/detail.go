@@ -11,13 +11,13 @@ import (
 	"gatelet/internal/client"
 )
 
-func (m model) renderDetail(width, height int) string {
+func (m model) renderInspector(width, height int) string {
 	item, ok := m.selectedRequest()
 	if !ok {
 		return fitBlock(rowStyle.Render(mutedStyle.Render("No request selected.")), width, height)
 	}
 
-	content := formatDetail(item, width, m.now, m.plainBody)
+	content := formatInspector(item, width, m.now, m.plainBody, m.inspectorTab)
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	visible := max(1, height)
 	start := min(max(0, m.detailScroll), max(0, len(lines)-visible))
@@ -41,7 +41,7 @@ func (m model) renderBody(width, height int) string {
 		return fitBlock(rowStyle.Render(mutedStyle.Render("No request selected.")), width, height)
 	}
 
-	content := formatBodyView(item, width, m.plainBody)
+	content := formatBodyView(item, width, m.plainBody, m.inspectorTab)
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	visible := max(1, height)
 	start := min(max(0, m.bodyScroll), max(0, len(lines)-visible))
@@ -59,33 +59,41 @@ func (m model) renderBody(width, height int) string {
 	return fitBlock(b.String(), width, height)
 }
 
-func formatBodyView(item requestItem, width int, plainBody bool) string {
+func formatBodyView(item requestItem, width int, plainBody bool, tab inspectorTab) string {
 	var b strings.Builder
-	writePreview(&b, bodyTitle("Request body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody)
-	b.WriteString("\n")
-	writePreview(&b, bodyTitle("Response body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody)
+	if tab == inspectorTabResponse {
+		writePreview(&b, bodyTitle("Body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody, bodyStateResponse(item))
+	} else {
+		writePreview(&b, bodyTitle("Body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody, "")
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func formatDetail(item requestItem, width int, now time.Time, plainBody bool) string {
+func formatInspector(item requestItem, width int, now time.Time, plainBody bool, tab inspectorTab) string {
+	if tab == inspectorTabResponse {
+		return formatResponseInspector(item, width, plainBody)
+	}
+	return formatRequestInspector(item, width, now, plainBody)
+}
+
+func formatRequestInspector(item requestItem, width int, now time.Time, plainBody bool) string {
 	if now.IsZero() {
 		now = time.Now()
 	}
 	var b strings.Builder
-	b.WriteString(rowStyle.Render(headStyle.Render(item.Method + " " + item.RequestURI)))
+	b.WriteString(rowStyle.Render(headStyle.Render("REQUEST")))
+	b.WriteString("\n")
+	b.WriteString(rowStyle.Render(valStyle.Render(item.Method + " " + item.RequestURI)))
 	b.WriteString("\n")
 	if item.TargetURL != "" {
 		writeMeta(&b, "Forwarded to", item.TargetURL)
 	}
-	writeMeta(&b, "Status", styledStatus(item))
 	writeMeta(&b, "State", stateLabel(item.State))
-	writeMeta(&b, "Remote", remoteIP(item.RemoteAddr))
+	writeMeta(&b, "Client", remoteIP(item.RemoteAddr))
 	writeMeta(&b, "Host", item.Host)
+	writeMeta(&b, "Started", item.StartedAt.Format("2006-01-02 15:04:05"))
 	writeMeta(&b, "Age", relativeAge(now, item.StartedAt))
-	writeMeta(&b, "Time", item.StartedAt.Format("2006-01-02 15:04:05"))
-	writeMeta(&b, "Duration", item.Duration.Round(time.Millisecond).String())
 	writeMeta(&b, "Request Size", formatBytes(item.RequestSize))
-	writeMeta(&b, "Response Size", formatBytes(item.ResponseSize))
 	if item.ErrorKind != "" {
 		writeMeta(&b, "Error Kind", errorKindLabel(item.ErrorKind))
 	}
@@ -97,13 +105,34 @@ func formatDetail(item requestItem, width int, now time.Time, plainBody bool) st
 	b.WriteString(rowStyle.Render(headStyle.Render("Request headers")))
 	b.WriteString("\n")
 	writeHeaders(&b, item.RequestHeader, 20)
-	writePreview(&b, bodyTitle("Request body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody)
+	writePreview(&b, bodyTitle("Body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody, "")
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatResponseInspector(item requestItem, width int, plainBody bool) string {
+	var b strings.Builder
+	b.WriteString(rowStyle.Render(headStyle.Render("RESPONSE")))
+	b.WriteString("\n")
+	writeMeta(&b, "Status", styledStatus(item))
+	writeMeta(&b, "State", stateLabel(item.State))
+	if item.TargetURL != "" {
+		writeMeta(&b, "Target", item.TargetURL)
+	}
+	writeMeta(&b, "Timing", fmt.Sprintf("Upstream %s", item.Duration.Round(time.Millisecond)))
+	writeMeta(&b, "Request Size", formatBytes(item.RequestSize))
+	writeMeta(&b, "Response Size", formatBytes(item.ResponseSize))
+	if item.ErrorKind != "" {
+		writeMeta(&b, "Error Kind", errorKindLabel(item.ErrorKind))
+	}
+	if item.Error != "" {
+		writeMeta(&b, "Error", status5xxStyle.Render(item.Error))
+	}
 
 	b.WriteString("\n")
 	b.WriteString(rowStyle.Render(headStyle.Render("Response headers")))
 	b.WriteString("\n")
 	writeHeaders(&b, item.ResponseHeader, 20)
-	writePreview(&b, bodyTitle("Response body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody)
+	writePreview(&b, bodyTitle("Body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody, bodyStateResponse(item))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -173,10 +202,16 @@ func bodyTitle(title string, preview client.BodyPreview, plain bool) string {
 	return title + " [" + mode + "]"
 }
 
-func writePreview(b *strings.Builder, title string, preview client.BodyPreview, width int, plain bool) {
+func writePreview(b *strings.Builder, title string, preview client.BodyPreview, width int, plain bool, state string) {
 	b.WriteString("\n")
 	b.WriteString(rowStyle.Render(headStyle.Render(title)))
 	b.WriteString("\n")
+	if state != "" && preview.Size == 0 && preview.Text == "" && !preview.Omitted {
+		b.WriteString("  ")
+		b.WriteString(mutedStyle.Render(state))
+		b.WriteString("\n")
+		return
+	}
 	if preview.Size == 0 {
 		b.WriteString("  ")
 		b.WriteString(mutedStyle.Render("(empty)"))
@@ -184,15 +219,44 @@ func writePreview(b *strings.Builder, title string, preview client.BodyPreview, 
 		return
 	}
 	if preview.Omitted && preview.Text == "" {
-		fmt.Fprintf(b, "  %s\n", mutedStyle.Render(fmt.Sprintf("omitted: %s (%s, %s)", preview.Reason, formatBytes(preview.Size), preview.ContentType)))
+		fmt.Fprintf(b, "  %s\n", mutedStyle.Render("omitted: "+preview.Reason))
+		if preview.ContentType != "" {
+			fmt.Fprintf(b, "  %s\n", mutedStyle.Render("content-type: "+preview.ContentType))
+		}
+		fmt.Fprintf(b, "  %s\n", mutedStyle.Render(capturedSummary(preview)))
 		return
 	}
 	text := previewText(preview, plain, max(20, width-4))
 	text = strings.ReplaceAll(text, "\n", "\n  ")
 	fmt.Fprintf(b, "  %s\n", text)
 	if preview.Omitted {
-		fmt.Fprintf(b, "  %s\n", mutedStyle.Render(fmt.Sprintf("omitted: %s after %s", preview.Reason, formatBytes(previewLimitForDisplay()))))
+		fmt.Fprintf(b, "  %s\n", mutedStyle.Render(fmt.Sprintf("omitted: %s; %s", preview.Reason, capturedSummary(preview))))
 	}
+}
+
+func bodyStateResponse(item requestItem) string {
+	switch item.State {
+	case client.EventResponseStarted:
+		return "(streaming response; body preview will appear when data is captured)"
+	case client.EventRequestForwarding:
+		return "(waiting for upstream response)"
+	default:
+		return ""
+	}
+}
+
+func capturedSummary(preview client.BodyPreview) string {
+	captured := preview.Captured
+	if captured == 0 && preview.Text != "" {
+		captured = int64(len(preview.Text))
+	}
+	if captured == 0 && preview.Size > 0 && !preview.Omitted {
+		captured = preview.Size
+	}
+	if preview.Size > 0 {
+		return fmt.Sprintf("captured %s of %s", formatBytes(captured), formatBytes(preview.Size))
+	}
+	return fmt.Sprintf("captured %s", formatBytes(captured))
 }
 
 func previewText(preview client.BodyPreview, plain bool, limit int) string {

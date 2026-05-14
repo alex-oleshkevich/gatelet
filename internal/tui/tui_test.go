@@ -170,14 +170,14 @@ func TestSelectedRowHighlightsFullWidth(t *testing.T) {
 	}
 }
 
-func TestDetailViewShowsRequestDetails(t *testing.T) {
+func TestInspectorRequestTabShowsOnlyRequestDetails(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
 		url:    "https://alex.tun.aresa.me",
 		status: "online",
-		mode:   viewDetail,
+		mode:   viewInspector,
 		width:  120,
-		height: 20,
+		height: 24,
 		now:    now,
 		index:  make(map[uint64]int),
 		requests: []requestItem{{
@@ -192,23 +192,81 @@ func TestDetailViewShowsRequestDetails(t *testing.T) {
 			RequestHeader: map[string][]string{
 				"User-Agent": {"curl/8.7.1"},
 			},
+			ResponseHeader: map[string][]string{
+				"Server": {"upstream"},
+			},
 		}},
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"request detail", "Forwarded to", "http://127.0.0.1:9090/api/users?active=1", "Status", "Remote", "Request headers", "User-Agent: curl/8.7.1", "Esc back"} {
+	for _, want := range []string{"request inspector", "REQUEST", "Forwarded to", "http://127.0.0.1:9090/api/users?active=1", "Client", "Request headers", "User-Agent: curl/8.7.1", "l response"} {
 		if !strings.Contains(plain, want) {
-			t.Fatalf("Detail view missing %q:\n%s", want, plain)
+			t.Fatalf("request inspector missing %q:\n%s", want, plain)
+		}
+	}
+	for _, notWant := range []string{"Response headers", "Server: upstream", "Response body"} {
+		if strings.Contains(plain, notWant) {
+			t.Fatalf("request inspector included response detail %q:\n%s", notWant, plain)
 		}
 	}
 }
 
-func TestDetailViewIdentifiesLocalTargetErrors(t *testing.T) {
+func TestInspectorResponseTabShowsOnlyResponseDetails(t *testing.T) {
+	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
+	m := model{
+		url:          "https://alex.tun.aresa.me",
+		status:       "online",
+		mode:         viewInspector,
+		inspectorTab: inspectorTabResponse,
+		width:        120,
+		height:       24,
+		now:          now,
+		index:        make(map[uint64]int),
+		requests: []requestItem{{
+			ID:           1,
+			Method:       "GET",
+			RequestURI:   "/api/users?active=1",
+			TargetURL:    "http://127.0.0.1:9090/api/users?active=1",
+			Host:         "alex.tun.aresa.me",
+			StatusCode:   200,
+			ResponseSize: 12,
+			Duration:     7 * time.Millisecond,
+			State:        client.EventRequestCompleted,
+			StartedAt:    now.Add(-5 * time.Second),
+			RequestHeader: map[string][]string{
+				"User-Agent": {"curl/8.7.1"},
+			},
+			ResponseHeader: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			ResponsePreview: client.BodyPreview{
+				Size:        int64(len(`{"ok":true}`)),
+				Captured:    int64(len(`{"ok":true}`)),
+				Text:        `{"ok":true}`,
+				ContentType: "application/json",
+			},
+		}},
+	}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"response inspector", "RESPONSE", "Target", "http://127.0.0.1:9090/api/users?active=1", "Upstream 7ms", "Response headers", "Content-Type: application/json", `"ok": true`, "h request"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("response inspector missing %q:\n%s", want, plain)
+		}
+	}
+	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1", "Forwarded to"} {
+		if strings.Contains(plain, notWant) {
+			t.Fatalf("response inspector included request detail %q:\n%s", notWant, plain)
+		}
+	}
+}
+
+func TestInspectorIdentifiesLocalTargetErrors(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
 		url:    "https://alex.tun.aresa.me",
 		status: "online",
-		mode:   viewDetail,
+		mode:   viewInspector,
 		width:  120,
 		height: 20,
 		now:    now,
@@ -227,17 +285,17 @@ func TestDetailViewIdentifiesLocalTargetErrors(t *testing.T) {
 	plain := stripANSI(m.View())
 	for _, want := range []string{"Error Kind", "local target", "connect: connection refused"} {
 		if !strings.Contains(plain, want) {
-			t.Fatalf("detail view missing %q:\n%s", want, plain)
+			t.Fatalf("inspector missing %q:\n%s", want, plain)
 		}
 	}
 }
 
-func TestDetailViewFormatsJSONBody(t *testing.T) {
+func TestInspectorRequestTabFormatsJSONBody(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
 		url:    "https://alex.tun.aresa.me",
 		status: "online",
-		mode:   viewDetail,
+		mode:   viewInspector,
 		width:  120,
 		height: 24,
 		now:    now,
@@ -251,6 +309,7 @@ func TestDetailViewFormatsJSONBody(t *testing.T) {
 			StartedAt:  now,
 			RequestPreview: client.BodyPreview{
 				Size:        int64(len(`{"name":"Alex"}`)),
+				Captured:    int64(len(`{"name":"Alex"}`)),
 				Text:        `{"name":"Alex"}`,
 				ContentType: "application/json",
 			},
@@ -258,7 +317,7 @@ func TestDetailViewFormatsJSONBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{`Request body [formatted json]`, `"name": "Alex"`} {
+	for _, want := range []string{`Body [formatted json]`, `"name": "Alex"`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("formatted JSON body missing %q:\n%s", want, plain)
 		}
@@ -268,12 +327,12 @@ func TestDetailViewFormatsJSONBody(t *testing.T) {
 	}
 }
 
-func TestDetailViewFormatsJSONWithoutContentType(t *testing.T) {
+func TestInspectorFormatsJSONWithoutContentType(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
 		url:    "https://alex.tun.aresa.me",
 		status: "online",
-		mode:   viewDetail,
+		mode:   viewInspector,
 		width:  120,
 		height: 24,
 		now:    now,
@@ -286,8 +345,9 @@ func TestDetailViewFormatsJSONWithoutContentType(t *testing.T) {
 			State:      client.EventRequestCompleted,
 			StartedAt:  now,
 			RequestPreview: client.BodyPreview{
-				Size: int64(len(`{"name":"Alex"}`)),
-				Text: `{"name":"Alex"}`,
+				Size:     int64(len(`{"name":"Alex"}`)),
+				Captured: int64(len(`{"name":"Alex"}`)),
+				Text:     `{"name":"Alex"}`,
 			},
 		}},
 	}
@@ -298,12 +358,12 @@ func TestDetailViewFormatsJSONWithoutContentType(t *testing.T) {
 	}
 }
 
-func TestDetailViewTogglesPlainJSONBody(t *testing.T) {
+func TestInspectorTogglesPlainJSONBody(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
 		url:       "https://alex.tun.aresa.me",
 		status:    "online",
-		mode:      viewDetail,
+		mode:      viewInspector,
 		width:     120,
 		height:    24,
 		now:       now,
@@ -318,6 +378,7 @@ func TestDetailViewTogglesPlainJSONBody(t *testing.T) {
 			StartedAt:  now,
 			RequestPreview: client.BodyPreview{
 				Size:        int64(len(`{"name":"Alex"}`)),
+				Captured:    int64(len(`{"name":"Alex"}`)),
 				Text:        `{"name":"Alex"}`,
 				ContentType: "application/json",
 			},
@@ -325,7 +386,7 @@ func TestDetailViewTogglesPlainJSONBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	if !strings.Contains(plain, `Request body [plain]`) || !strings.Contains(plain, `{"name":"Alex"}`) {
+	if !strings.Contains(plain, `Body [plain]`) || !strings.Contains(plain, `{"name":"Alex"}`) {
 		t.Fatalf("plain body missing raw JSON:\n%s", plain)
 	}
 	if strings.Contains(plain, `"name": "Alex"`) {
@@ -333,7 +394,7 @@ func TestDetailViewTogglesPlainJSONBody(t *testing.T) {
 	}
 }
 
-func TestDetailViewOpensBodyView(t *testing.T) {
+func TestInspectorOpensBodyView(t *testing.T) {
 	m := detailActionModel()
 
 	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
@@ -350,16 +411,17 @@ func TestDetailViewOpensBodyView(t *testing.T) {
 	}
 }
 
-func TestBodyViewShowsOnlyBodiesAndFormatsJSON(t *testing.T) {
+func TestBodyViewShowsOnlyActiveInspectorTabBody(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{
-		url:    "https://alex.tun.aresa.me",
-		status: "online",
-		mode:   viewBody,
-		width:  120,
-		height: 20,
-		now:    now,
-		index:  make(map[uint64]int),
+		url:          "https://alex.tun.aresa.me",
+		status:       "online",
+		mode:         viewBody,
+		inspectorTab: inspectorTabResponse,
+		width:        120,
+		height:       20,
+		now:          now,
+		index:        make(map[uint64]int),
 		requests: []requestItem{{
 			ID:         1,
 			Method:     "POST",
@@ -372,11 +434,13 @@ func TestBodyViewShowsOnlyBodiesAndFormatsJSON(t *testing.T) {
 			},
 			RequestPreview: client.BodyPreview{
 				Size:        int64(len(`{"name":"Alex"}`)),
+				Captured:    int64(len(`{"name":"Alex"}`)),
 				Text:        `{"name":"Alex"}`,
 				ContentType: "application/json",
 			},
 			ResponsePreview: client.BodyPreview{
 				Size:        int64(len(`{"ok":true}`)),
+				Captured:    int64(len(`{"ok":true}`)),
 				Text:        `{"ok":true}`,
 				ContentType: "application/json",
 			},
@@ -384,15 +448,77 @@ func TestBodyViewShowsOnlyBodiesAndFormatsJSON(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"body viewer", "Request body [formatted json]", `"name": "Alex"`, "Response body [formatted json]", `"ok": true`} {
+	for _, want := range []string{"response body", "Body [formatted json]", `"ok": true`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("body view missing %q:\n%s", want, plain)
 		}
 	}
-	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1"} {
+	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1", `"name": "Alex"`} {
 		if strings.Contains(plain, notWant) {
-			t.Fatalf("body view included detail metadata %q:\n%s", notWant, plain)
+			t.Fatalf("body view included inactive request data %q:\n%s", notWant, plain)
 		}
+	}
+}
+
+func TestInspectorSwitchesTabsAndReturnsFromBodyToActiveTab(t *testing.T) {
+	m := detailActionModel()
+
+	updated, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	got := updated.(model)
+	if got.inspectorTab != inspectorTabResponse {
+		t.Fatalf("inspectorTab = %v, want response", got.inspectorTab)
+	}
+
+	updated, _ = got.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	got = updated.(model)
+	if got.mode != viewBody || got.inspectorTab != inspectorTabResponse {
+		t.Fatalf("mode/tab = %v/%v, want body/response", got.mode, got.inspectorTab)
+	}
+
+	updated, _ = got.updateKey(tea.KeyMsg{Type: tea.KeyEsc})
+	got = updated.(model)
+	if got.mode != viewInspector || got.inspectorTab != inspectorTabResponse {
+		t.Fatalf("mode/tab = %v/%v, want inspector/response", got.mode, got.inspectorTab)
+	}
+}
+
+func TestInspectorShowsBinaryAndTruncatedBodyMetadata(t *testing.T) {
+	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
+	m := model{
+		url:          "https://alex.tun.aresa.me",
+		status:       "online",
+		mode:         viewInspector,
+		inspectorTab: inspectorTabResponse,
+		width:        120,
+		height:       20,
+		now:          now,
+		index:        make(map[uint64]int),
+		requests: []requestItem{{
+			ID:         1,
+			Method:     "GET",
+			RequestURI: "/download",
+			TargetURL:  "http://127.0.0.1:9090/download",
+			StatusCode: 200,
+			State:      client.EventRequestCompleted,
+			StartedAt:  now,
+			ResponsePreview: client.BodyPreview{
+				ContentType: "application/pdf",
+				Size:        10 * 1024 * 1024,
+				Captured:    4096,
+				Omitted:     true,
+				Reason:      "binary body",
+			},
+		}},
+	}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"omitted: binary body", "application/pdf", "captured 4.0kb of 10mb"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("binary metadata missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "%PDF") {
+		t.Fatalf("binary body bytes rendered unexpectedly:\n%s", plain)
 	}
 }
 
@@ -549,7 +675,7 @@ func detailActionModel() model {
 		ctx:    context.Background(),
 		url:    "https://alex.tun.aresa.me",
 		status: "online",
-		mode:   viewDetail,
+		mode:   viewInspector,
 		width:  120,
 		height: 24,
 		now:    now,
@@ -565,9 +691,19 @@ func detailActionModel() model {
 			RequestHeader: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
+			ResponseHeader: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
 			RequestPreview: client.BodyPreview{
 				Size:        int64(len(`{"name":"Alex"}`)),
+				Captured:    int64(len(`{"name":"Alex"}`)),
 				Text:        `{"name":"Alex"}`,
+				ContentType: "application/json",
+			},
+			ResponsePreview: client.BodyPreview{
+				Size:        int64(len(`{"ok":true}`)),
+				Captured:    int64(len(`{"ok":true}`)),
+				Text:        `{"ok":true}`,
 				ContentType: "application/json",
 			},
 		}},

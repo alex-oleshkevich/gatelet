@@ -386,6 +386,21 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	}
 	defer resp.Body.Close()
 
+	emit(config.Events, RequestEvent{
+		ID:             id,
+		Type:           EventResponseStarted,
+		Time:           time.Now(),
+		Method:         req.Method,
+		RequestURI:     requestURI,
+		TargetURL:      targetURL,
+		Host:           req.Host,
+		RemoteAddr:     remoteAddr,
+		RequestHeader:  cloneHeader(req.Header),
+		ResponseHeader: cloneHeader(resp.Header),
+		StatusCode:     resp.StatusCode,
+		Duration:       time.Since(started),
+	})
+
 	respBody, respPreview := wrapBodyForPreview(resp.Header, resp.Body, config.PreviewLimit)
 	resp.Body = respBody
 	if err := resp.Write(stream); err != nil {

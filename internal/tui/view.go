@@ -31,8 +31,8 @@ func (m model) View() string {
 	switch m.mode {
 	case viewBody:
 		body = m.renderBody(width, bodyHeight)
-	case viewDetail:
-		body = m.renderDetail(width, bodyHeight)
+	case viewInspector:
+		body = m.renderInspector(width, bodyHeight)
 	default:
 		body = m.renderList(width, bodyHeight)
 	}
@@ -44,12 +44,12 @@ func (m model) renderHeader(width int) string {
 	left := titleStyle.Render("gatelet") + " " + urlStyle.Render(m.url)
 	switch m.mode {
 	case viewBody:
-		left = titleStyle.Render("gatelet") + " " + headStyle.Render("body viewer")
+		left = titleStyle.Render("gatelet") + " " + headStyle.Render(m.inspectorTabLabel()+" body")
 		if item, ok := m.selectedRequest(); ok {
 			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
 		}
-	case viewDetail:
-		left = titleStyle.Render("gatelet") + " " + headStyle.Render("request detail")
+	case viewInspector:
+		left = titleStyle.Render("gatelet") + " " + headStyle.Render(m.inspectorTabLabel()+" inspector")
 		if item, ok := m.selectedRequest(); ok {
 			left += " " + mutedStyle.Render(item.Method+" "+item.RequestURI)
 		}
@@ -92,22 +92,22 @@ func (m model) renderStatusBar(width int) string {
 }
 
 func (m model) statusLabel() string {
-	if m.mode == viewDetail {
+	if m.mode == viewInspector {
 		if item, ok := m.selectedRequest(); ok {
 			mode := "FORMAT"
 			if m.plainBody {
 				mode = "PLAIN"
 			}
-			return "DETAIL " + item.Method + " " + mode
+			return strings.ToUpper(m.inspectorTabLabel()) + " " + item.Method + " " + mode
 		}
-		return "DETAIL"
+		return strings.ToUpper(m.inspectorTabLabel())
 	}
 	if m.mode == viewBody {
 		mode := "FORMAT"
 		if m.plainBody {
 			mode = "PLAIN"
 		}
-		return "BODY " + mode
+		return "BODY " + strings.ToUpper(m.inspectorTabLabel()) + " " + mode
 	}
 	visible := len(m.visibleRequests())
 	if visible == 0 {
@@ -129,20 +129,30 @@ func (m model) statusLabel() string {
 func (m model) statusHelp() string {
 	if m.width < 72 {
 		if m.mode == viewBody {
-			return "Esc back | F format | j/k scroll | q"
+			return "Esc back | F format | h/l tab | q"
 		}
-		if m.mode == viewDetail {
-			return "b body | Esc back | r replay | q"
+		if m.mode == viewInspector {
+			return "h/l tabs | b body | r replay | q"
 		}
 		return "Enter open | / filter | p pause | q"
 	}
 	if m.mode == viewBody {
-		return "F format/plain | Esc detail | j/k scroll | q quit"
+		return "F format/plain | h/l tab | Esc inspector | j/k scroll | q quit"
 	}
-	if m.mode == viewDetail {
-		return "b body | r replay | y copy curl | e save curl | F format/plain | Esc back | j/k scroll | q quit"
+	if m.mode == viewInspector {
+		if m.inspectorTab == inspectorTabResponse {
+			return "h request | b body | s save | F format/plain | Esc back | j/k scroll | q quit"
+		}
+		return "l response | b body | r replay | y copy curl | e save curl | F format/plain | Esc back | j/k scroll | q quit"
 	}
 	return "Enter details | j/k move | / filter | x clear | c copy url | p pause | q quit"
+}
+
+func (m model) inspectorTabLabel() string {
+	if m.inspectorTab == inspectorTabResponse {
+		return "response"
+	}
+	return "request"
 }
 
 func styledConnectionState(status string) string {

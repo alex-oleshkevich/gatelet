@@ -25,6 +25,7 @@ const (
 	EventRequestReceived   EventType = "request_received"
 	EventRequestQueued     EventType = "request_queued"
 	EventRequestForwarding EventType = "request_forwarding"
+	EventResponseStarted   EventType = "response_started"
 	EventRequestCompleted  EventType = "request_completed"
 	EventRequestFailed     EventType = "request_failed"
 )
@@ -40,6 +41,7 @@ type BodyPreview struct {
 	Text        string
 	ContentType string
 	Size        int64
+	Captured    int64
 	Omitted     bool
 	Reason      string
 }

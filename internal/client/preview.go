@@ -42,6 +42,7 @@ func (c *bodyPreviewCapture) Preview() BodyPreview {
 	preview := BodyPreview{
 		ContentType: c.contentType,
 		Size:        c.size,
+		Captured:    int64(c.buf.Len()),
 	}
 	if c.size == 0 {
 		return preview

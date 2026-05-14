@@ -469,6 +469,52 @@ func TestHandleStreamReportsForwardedTargetURL(t *testing.T) {
 	}
 }
 
+func TestHandleStreamReportsResponseStartedBeforeStreamingCompletes(t *testing.T) {
+	release := make(chan struct{})
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+		_, _ = w.Write([]byte("data: done\n\n"))
+	}))
+	defer local.Close()
+	defer close(release)
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	events := make(chan RequestEvent, 8)
+	go handleStream(context.Background(), serverConn, Config{
+		Target: local.URL,
+		Events: events,
+	})
+
+	_, _ = fmt.Fprint(clientConn, "GET /events HTTP/1.1\r\nHost: alex.example.test\r\n\r\n")
+
+	var started RequestEvent
+	deadline := time.After(time.Second)
+	for started.Type != EventResponseStarted {
+		select {
+		case event := <-events:
+			started = event
+		case <-deadline:
+			t.Fatal("timed out waiting for response started event")
+		}
+	}
+	if started.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want %d", started.StatusCode, http.StatusOK)
+	}
+	if got := started.ResponseHeader.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+	if started.TargetURL != local.URL+"/events" {
+		t.Fatalf("TargetURL = %q, want %q", started.TargetURL, local.URL+"/events")
+	}
+}
+
 func TestHandleStreamLogsFailedRequestSummary(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()
