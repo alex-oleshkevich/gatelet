@@ -4,6 +4,8 @@ set -euo pipefail
 image="${GATELET_E2E_IMAGE:-gatelet:e2e}"
 network="${GATELET_E2E_NETWORK:-gatelet-e2e-$$}"
 token="${GATELET_E2E_TOKEN:-e2e-token-$(date +%s)}"
+admin_user="${GATELET_E2E_ADMIN_USER:-operator}"
+admin_password="${GATELET_E2E_ADMIN_PASSWORD:-admin-secret}"
 target="gatelet-e2e-target-$$"
 daemon="gatelet-e2e-daemon-$$"
 client="gatelet-e2e-client-$$"
@@ -53,6 +55,8 @@ docker run -d --name "$target" --network "$network" hashicorp/http-echo:1.0 \
 
 docker run -d --name "$daemon" --network "$network" \
   -e GATELET_TOKEN="$token" \
+  -e GATELET_ADMIN_USER="$admin_user" \
+  -e GATELET_ADMIN_PASSWORD="$admin_password" \
   "$image" \
   --domain e2e.test \
   --http :8080 \
@@ -71,6 +75,34 @@ docker run -d --name "$client" --network "$network" \
 
 wait_for_log "$daemon" "tunnel connected"
 wait_for_http "http://$daemon:8080/" "alex.e2e.test"
+
+admin_status="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -sS -o /dev/null -w '%{http_code}' -H 'Host: e2e.test' "http://$daemon:8080/admin")"
+if [[ "$admin_status" != "401" ]]; then
+  echo "unauthenticated admin status = $admin_status, want 401" >&2
+  exit 1
+fi
+
+admin_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -fsS -u "$admin_user:$admin_password" -H 'Host: e2e.test' "http://$daemon:8080/admin")"
+if [[ "$admin_body" != *"Gatelet relay"* || "$admin_body" != *"Active tunnels"* ]]; then
+  echo "admin dashboard missing expected content" >&2
+  exit 1
+fi
+
+status_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -fsS -u "$admin_user:$admin_password" -H 'Host: e2e.test' "http://$daemon:8080/__gatelet/status")"
+if [[ "$status_body" != *'"active_tunnels":1'* ]]; then
+  echo "status endpoint missing active tunnel count: $status_body" >&2
+  exit 1
+fi
+
+metrics_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -fsS -u "$admin_user:$admin_password" -H 'Host: e2e.test' "http://$daemon:8080/metrics")"
+if [[ "$metrics_body" != *"gatelet_active_tunnels 1"* ]]; then
+  echo "metrics endpoint missing active tunnel count" >&2
+  exit 1
+fi
 
 body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
   -fsS -H 'Host: alex.e2e.test' "http://$daemon:8080/hello?name=alex")"
@@ -95,5 +127,19 @@ if [[ "$status" != "404" ]]; then
   echo "unknown tunnel status = $status, want 404" >&2
   exit 1
 fi
+
+action_token="$(printf '%s' "$admin_body" | sed -n 's/.*name="gatelet-admin-action-token" content="\([0-9a-f]*\)".*/\1/p')"
+if [[ -z "$action_token" ]]; then
+  echo "admin action token not found in dashboard" >&2
+  exit 1
+fi
+
+docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -fsS -X POST \
+  -u "$admin_user:$admin_password" \
+  -H 'Host: e2e.test' \
+  -H "X-Gatelet-Admin-Token: $action_token" \
+  "http://$daemon:8080/admin/tunnels/alex/disconnect" >/dev/null
+wait_for_log "$daemon" "tunnel disconnected"
 
 echo "docker e2e passed"

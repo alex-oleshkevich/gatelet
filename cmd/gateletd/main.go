@@ -41,6 +41,8 @@ func main() {
 	flag.StringVar(&config.ControlAddr, "control", ":4443", "tunnel control listen address")
 	flag.StringVar(&config.Token, "token", "", "shared tunnel authentication token")
 	flag.StringVar(&tokensSpec, "tokens", "", "comma-separated token specs: id=value or id=value:inactive")
+	flag.StringVar(&config.AdminUser, "admin-user", "", "admin dashboard Basic Auth username")
+	flag.StringVar(&config.AdminPassword, "admin-password", "", "admin dashboard Basic Auth password")
 	flag.StringVar(&reservedNamesSpec, "reserved-names", "", "comma-separated extra reserved tunnel names")
 	flag.StringVar(&allowNamesSpec, "allow-names", "", "comma-separated allowed tunnel names; empty allows any non-reserved name")
 	flag.StringVar(&logFormat, "log-format", logFormat, "daemon log format: text or json")
@@ -68,6 +70,15 @@ func main() {
 			log.Fatalf("parse tokens: %v", err)
 		}
 		config.Tokens = tokens
+	}
+	if config.AdminUser == "" {
+		config.AdminUser = os.Getenv("GATELET_ADMIN_USER")
+	}
+	if config.AdminPassword == "" {
+		config.AdminPassword = os.Getenv("GATELET_ADMIN_PASSWORD")
+	}
+	if err := validateAdminConfig(config.AdminUser, config.AdminPassword); err != nil {
+		log.Fatal(err)
 	}
 	if reservedNamesSpec == "" {
 		reservedNamesSpec = os.Getenv("GATELET_RESERVED_NAMES")
@@ -171,6 +182,16 @@ func parseNameList(spec string) ([]string, error) {
 		names = append(names, name)
 	}
 	return names, nil
+}
+
+func validateAdminConfig(user, password string) error {
+	if user == "" && password == "" {
+		return nil
+	}
+	if user == "" || password == "" {
+		return fmt.Errorf("--admin-user/GATELET_ADMIN_USER and --admin-password/GATELET_ADMIN_PASSWORD must be provided together")
+	}
+	return nil
 }
 
 func parseTokenSpecs(spec string) ([]server.Token, error) {

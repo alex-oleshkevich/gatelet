@@ -50,6 +50,7 @@ type RequestEvent struct {
 	Time            time.Time
 	Method          string
 	RequestURI      string
+	TargetURL       string
 	Host            string
 	RemoteAddr      string
 	RequestHeader   http.Header
@@ -118,6 +119,7 @@ func RequestLogLine(event RequestEvent, format LogFormat) (string, error) {
 		Type:        "request",
 		Method:      emptyDefault(event.Method, "-"),
 		Path:        emptyDefault(event.RequestURI, "/"),
+		TargetURL:   event.TargetURL,
 		Status:      event.StatusCode,
 		RequestSize: event.RequestSize,
 		RemoteIP:    remoteIP(event.RemoteAddr),
@@ -136,6 +138,7 @@ type requestLogRecord struct {
 	Type        string    `json:"type"`
 	Method      string    `json:"method"`
 	Path        string    `json:"path"`
+	TargetURL   string    `json:"target_url,omitempty"`
 	Status      int       `json:"status"`
 	RequestSize int64     `json:"request_size"`
 	RemoteIP    string    `json:"remote_ip"`

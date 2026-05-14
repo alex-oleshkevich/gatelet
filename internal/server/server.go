@@ -3,6 +3,8 @@ package server
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,8 @@ type Config struct {
 	Domain            string
 	Token             string
 	Tokens            []Token
+	AdminUser         string
+	AdminPassword     string
 	ReservedNames     []string
 	AllowNames        []string
 	ControlAddr       string
@@ -57,6 +61,9 @@ type Server struct {
 	logger            *slog.Logger
 	heartbeatInterval time.Duration
 	heartbeatTimeout  time.Duration
+	adminUser         string
+	adminPassword     string
+	adminActionToken  string
 
 	mu       sync.RWMutex
 	sessions map[string]*tunnelSession
@@ -125,6 +132,9 @@ func New(config Config) *Server {
 		logger:            logger,
 		heartbeatInterval: config.HeartbeatInterval,
 		heartbeatTimeout:  config.HeartbeatTimeout,
+		adminUser:         config.AdminUser,
+		adminPassword:     config.AdminPassword,
+		adminActionToken:  newAdminActionToken(),
 		sessions:          make(map[string]*tunnelSession),
 		pending:           make(map[string]string),
 	}
@@ -227,6 +237,17 @@ func (s *Server) TunnelStats(name string) (TunnelStats, bool) {
 	return tunnel.stats(name), true
 }
 
+func (s *Server) DisconnectTunnel(name string) bool {
+	s.mu.RLock()
+	tunnel := s.sessions[name]
+	s.mu.RUnlock()
+
+	if tunnel == nil || tunnel.session.IsClosed() {
+		return false
+	}
+	return tunnel.session.Close() == nil
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	if r.URL.Path == "/__gatelet/control" {
@@ -236,10 +257,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.isAdminHost(r.Host) {
 		switch r.URL.Path {
 		case "/__gatelet/status":
+			if !s.requireAdmin(w, r) {
+				return
+			}
 			s.serveStatus(w)
 			return
 		case "/metrics":
+			if !s.requireAdmin(w, r) {
+				return
+			}
 			s.serveMetrics(w)
+			return
+		}
+		if r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
+			if !s.requireAdmin(w, r) {
+				return
+			}
+			s.serveAdmin(w, r)
 			return
 		}
 	}
@@ -588,6 +622,46 @@ func (s *Server) isAdminHost(host string) bool {
 		host = h
 	}
 	return normalizeDNSName(host) == s.domain
+}
+
+func (s *Server) adminEnabled() bool {
+	return s.adminUser != "" && s.adminPassword != ""
+}
+
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if !s.adminEnabled() {
+		http.NotFound(w, r)
+		return false
+	}
+
+	user, password, ok := r.BasicAuth()
+	if !ok ||
+		subtle.ConstantTimeCompare([]byte(user), []byte(s.adminUser)) != 1 ||
+		subtle.ConstantTimeCompare([]byte(password), []byte(s.adminPassword)) != 1 {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Gatelet Admin", charset="UTF-8"`)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+func (s *Server) validAdminActionToken(r *http.Request) bool {
+	token := r.Header.Get("X-Gatelet-Admin-Token")
+	if token == "" {
+		if err := r.ParseForm(); err != nil {
+			return false
+		}
+		token = r.Form.Get("csrf")
+	}
+	return token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.adminActionToken)) == 1
+}
+
+func newAdminActionToken() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("generate admin action token: %v", err))
+	}
+	return fmt.Sprintf("%x", b[:])
 }
 
 func (t *tunnelSession) stats(name string) TunnelStats {

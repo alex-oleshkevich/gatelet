@@ -23,6 +23,7 @@ type requestItem struct {
 	ID              uint64
 	Method          string
 	RequestURI      string
+	TargetURL       string
 	Host            string
 	RemoteAddr      string
 	RequestHeader   map[string][]string
@@ -305,6 +306,7 @@ func (m *model) applyEvent(event client.RequestEvent) {
 		ID:              event.ID,
 		Method:          event.Method,
 		RequestURI:      event.RequestURI,
+		TargetURL:       event.TargetURL,
 		Host:            event.Host,
 		RemoteAddr:      event.RemoteAddr,
 		RequestHeader:   event.RequestHeader,
@@ -360,6 +362,9 @@ func mergeRequestItem(dst *requestItem, src requestItem) {
 	}
 	if src.Host != "" {
 		dst.Host = src.Host
+	}
+	if src.TargetURL != "" {
+		dst.TargetURL = src.TargetURL
 	}
 	if src.RemoteAddr != "" {
 		dst.RemoteAddr = src.RemoteAddr

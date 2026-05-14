@@ -183,7 +183,8 @@ func TestDetailViewShowsRequestDetails(t *testing.T) {
 		requests: []requestItem{{
 			ID:         1,
 			Method:     "GET",
-			RequestURI: "/api/users",
+			RequestURI: "/api/users?active=1",
+			TargetURL:  "http://127.0.0.1:9090/api/users?active=1",
 			Host:       "alex.tun.aresa.me",
 			StatusCode: 200,
 			State:      client.EventRequestCompleted,
@@ -195,7 +196,7 @@ func TestDetailViewShowsRequestDetails(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"request detail", "Status", "Remote", "Request headers", "User-Agent: curl/8.7.1", "Esc back"} {
+	for _, want := range []string{"request detail", "Forwarded to", "http://127.0.0.1:9090/api/users?active=1", "Status", "Remote", "Request headers", "User-Agent: curl/8.7.1", "Esc back"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("Detail view missing %q:\n%s", want, plain)
 		}

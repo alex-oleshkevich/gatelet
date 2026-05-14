@@ -74,6 +74,9 @@ func formatDetail(item requestItem, width int, now time.Time, plainBody bool) st
 	var b strings.Builder
 	b.WriteString(rowStyle.Render(headStyle.Render(item.Method + " " + item.RequestURI)))
 	b.WriteString("\n")
+	if item.TargetURL != "" {
+		writeMeta(&b, "Forwarded to", item.TargetURL)
+	}
 	writeMeta(&b, "Status", styledStatus(item))
 	writeMeta(&b, "State", stateLabel(item.State))
 	writeMeta(&b, "Remote", remoteIP(item.RemoteAddr))

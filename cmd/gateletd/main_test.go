@@ -69,6 +69,30 @@ func TestParseNameListRejectsInvalidNames(t *testing.T) {
 	}
 }
 
+func TestValidateAdminConfigRequiresUserAndPasswordTogether(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		user     string
+		password string
+		wantErr  bool
+	}{
+		{name: "disabled"},
+		{name: "configured", user: "operator", password: "secret"},
+		{name: "missing password", user: "operator", wantErr: true},
+		{name: "missing user", password: "secret", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateAdminConfig(tc.user, tc.password)
+			if tc.wantErr && err == nil {
+				t.Fatal("validateAdminConfig returned nil error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateAdminConfig returned error: %v", err)
+			}
+		})
+	}
+}
+
 func TestParseTokenSpecsAcceptsActiveAndInactiveTokens(t *testing.T) {
 	tokens, err := parseTokenSpecs("current=new-token,previous=old-token,inactive=disabled-token:inactive")
 	if err != nil {

@@ -429,6 +429,46 @@ func TestHandleStreamUsesConfiguredPreviewLimit(t *testing.T) {
 	}
 }
 
+func TestHandleStreamReportsForwardedTargetURL(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer local.Close()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	events := make(chan RequestEvent, 4)
+	go handleStream(context.Background(), serverConn, Config{
+		Target: local.URL + "/base",
+		Events: events,
+	})
+
+	_, _ = fmt.Fprint(clientConn, "GET /hello?name=alex HTTP/1.1\r\nHost: alex.example.test\r\n\r\n")
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse returned error: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	var completed RequestEvent
+	deadline := time.After(time.Second)
+	for completed.Type != EventRequestCompleted {
+		select {
+		case event := <-events:
+			completed = event
+		case <-deadline:
+			t.Fatal("timed out waiting for completed event")
+		}
+	}
+
+	want := local.URL + "/base/hello?name=alex"
+	if completed.TargetURL != want {
+		t.Fatalf("TargetURL = %q, want %q", completed.TargetURL, want)
+	}
+}
+
 func TestHandleStreamLogsFailedRequestSummary(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	defer clientConn.Close()

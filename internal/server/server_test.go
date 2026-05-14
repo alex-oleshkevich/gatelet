@@ -27,6 +27,11 @@ import (
 	"gatelet/internal/protocol"
 )
 
+const (
+	testAdminUser     = "operator"
+	testAdminPassword = "admin-secret"
+)
+
 func TestServerRoutesSubdomainThroughClientTunnel(t *testing.T) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/hello" {
@@ -287,6 +292,7 @@ func TestServerStatusEndpointReturnsDaemonAndTunnelStats(t *testing.T) {
 
 	relay, cleanup := startTestTunnel(t, local.URL)
 	defer cleanup()
+	enableAdmin(relay)
 
 	req := httptest.NewRequest(http.MethodPost, "http://alex.example.test/items", strings.NewReader("payload"))
 	req.Host = "alex.example.test"
@@ -298,6 +304,7 @@ func TestServerStatusEndpointReturnsDaemonAndTunnelStats(t *testing.T) {
 
 	statusReq := httptest.NewRequest(http.MethodGet, "http://example.test/__gatelet/status", nil)
 	statusReq.Host = "example.test"
+	setAdminAuth(statusReq)
 	statusRec := httptest.NewRecorder()
 	relay.ServeHTTP(statusRec, statusReq)
 	if statusRec.Code != http.StatusOK {
@@ -353,6 +360,7 @@ func TestServerMetricsEndpointReturnsPrometheusMetrics(t *testing.T) {
 
 	relay, cleanup := startTestTunnel(t, local.URL)
 	defer cleanup()
+	enableAdmin(relay)
 
 	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/metrics-source", nil)
 	req.Host = "alex.example.test"
@@ -364,6 +372,7 @@ func TestServerMetricsEndpointReturnsPrometheusMetrics(t *testing.T) {
 
 	metricsReq := httptest.NewRequest(http.MethodGet, "http://example.test/metrics", nil)
 	metricsReq.Host = "example.test"
+	setAdminAuth(metricsReq)
 	metricsRec := httptest.NewRecorder()
 	relay.ServeHTTP(metricsRec, metricsReq)
 	if metricsRec.Code != http.StatusOK {
@@ -386,10 +395,10 @@ func TestServerMetricsEndpointReturnsPrometheusMetrics(t *testing.T) {
 
 func TestServerAdminEndpointsDoNotOverrideTunnelRoutes(t *testing.T) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/metrics" {
-			t.Fatalf("path = %q, want /metrics", r.URL.Path)
+		if r.URL.Path != "/metrics" && r.URL.Path != "/admin" {
+			t.Fatalf("path = %q, want /metrics or /admin", r.URL.Path)
 		}
-		_, _ = w.Write([]byte("local metrics"))
+		_, _ = w.Write([]byte("local " + strings.TrimPrefix(r.URL.Path, "/")))
 	}))
 	defer local.Close()
 
@@ -405,6 +414,118 @@ func TestServerAdminEndpointsDoNotOverrideTunnelRoutes(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "local metrics" {
 		t.Fatalf("body = %q, want local metrics", got)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodGet, "http://alex.example.test/admin", nil)
+	adminReq.Host = "alex.example.test"
+	adminRec := httptest.NewRecorder()
+	relay.ServeHTTP(adminRec, adminReq)
+	if adminRec.Code != http.StatusOK {
+		t.Fatalf("admin tunnel status = %d, want %d", adminRec.Code, http.StatusOK)
+	}
+	if got := adminRec.Body.String(); got != "local admin" {
+		t.Fatalf("body = %q, want local admin", got)
+	}
+}
+
+func TestServerAdminDashboardRequiresConfiguredCredentials(t *testing.T) {
+	relay := New(Config{
+		Domain: "example.test",
+		Token:  "dev-token",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/admin", nil)
+	req.Host = "example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("admin status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "http://example.test/__gatelet/status", nil)
+	statusReq.Host = "example.test"
+	statusRec := httptest.NewRecorder()
+	relay.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusNotFound {
+		t.Fatalf("status endpoint = %d, want %d when admin disabled", statusRec.Code, http.StatusNotFound)
+	}
+}
+
+func TestServerAdminDashboardRequiresBasicAuth(t *testing.T) {
+	relay := New(Config{
+		Domain:        "example.test",
+		Token:         "dev-token",
+		AdminUser:     testAdminUser,
+		AdminPassword: testAdminPassword,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.test/admin", nil)
+	req.Host = "example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing auth status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Gatelet Admin") {
+		t.Fatalf("WWW-Authenticate = %q, want Gatelet Admin realm", got)
+	}
+
+	wrongReq := httptest.NewRequest(http.MethodGet, "http://example.test/admin", nil)
+	wrongReq.Host = "example.test"
+	wrongReq.SetBasicAuth(testAdminUser, "wrong")
+	wrongRec := httptest.NewRecorder()
+	relay.ServeHTTP(wrongRec, wrongReq)
+	if wrongRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong auth status = %d, want %d", wrongRec.Code, http.StatusUnauthorized)
+	}
+
+	okReq := httptest.NewRequest(http.MethodGet, "http://example.test/admin", nil)
+	okReq.Host = "example.test"
+	setAdminAuth(okReq)
+	okRec := httptest.NewRecorder()
+	relay.ServeHTTP(okRec, okReq)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("correct auth status = %d, want %d", okRec.Code, http.StatusOK)
+	}
+	if body := okRec.Body.String(); !strings.Contains(body, "Gatelet relay") || !strings.Contains(body, "/admin/assets/htmx.min.js") {
+		t.Fatalf("admin body missing expected dashboard content:\n%s", body)
+	}
+}
+
+func TestServerAdminDisconnectRequiresCSRFAndClosesTunnel(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer local.Close()
+
+	relay, cleanup := startTestTunnel(t, local.URL)
+	defer cleanup()
+	enableAdmin(relay)
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/admin/tunnels/alex/disconnect", nil)
+	req.Host = "example.test"
+	setAdminAuth(req)
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if !relay.HasTunnel("alex") {
+		t.Fatal("tunnel disconnected despite missing CSRF token")
+	}
+
+	okReq := httptest.NewRequest(http.MethodPost, "http://example.test/admin/tunnels/alex/disconnect", nil)
+	okReq.Host = "example.test"
+	okReq.Header.Set("X-Gatelet-Admin-Token", relay.adminActionToken)
+	setAdminAuth(okReq)
+	okRec := httptest.NewRecorder()
+	relay.ServeHTTP(okRec, okReq)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("disconnect status = %d, want %d", okRec.Code, http.StatusOK)
+	}
+	waitForNoTunnel(t, relay, "alex")
+	if body := okRec.Body.String(); !strings.Contains(body, "Disconnected tunnel alex") {
+		t.Fatalf("disconnect response missing notice:\n%s", body)
 	}
 }
 
@@ -1138,6 +1259,15 @@ func waitForNoTunnel(t *testing.T, relay *Server, name string) {
 	}
 
 	t.Fatalf("timed out waiting for tunnel %q to disappear", name)
+}
+
+func enableAdmin(relay *Server) {
+	relay.adminUser = testAdminUser
+	relay.adminPassword = testAdminPassword
+}
+
+func setAdminAuth(req *http.Request) {
+	req.SetBasicAuth(testAdminUser, testAdminPassword)
 }
 
 func waitForLog(t *testing.T, logs interface{ String() string }, needle string) {

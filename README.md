@@ -145,6 +145,17 @@ GATELET_TOKENS='current=new-token,previous=old-token,retired=oldest-token:inacti
 
 Raw TCP control is still available on `--control`, default `:4443`. Add `--control-tls-cert` and `--control-tls-key` when exposing raw TCP control in production.
 
+Enable the admin dashboard by setting a Basic Auth username and password:
+
+```sh
+GATELET_ADMIN_USER=operator \
+GATELET_ADMIN_PASSWORD='replace-with-a-long-random-password' \
+GATELET_TOKEN="$GATELET_TOKEN" \
+  gateletd --domain example.com --http :8080
+```
+
+Then open `https://example.com/admin`. When admin credentials are configured, `/admin`, `/__gatelet/status`, and `/metrics` require Basic Auth on the base domain. If admin credentials are not configured, those routes return `404`.
+
 Run `gatelet` on your local machine:
 
 ```sh
@@ -302,6 +313,8 @@ GATELET_TOKEN="$GATELET_TOKEN" gateletd --domain example.com --http :8080
 | `--control` | No | Tunnel control listen address, default `:4443` |
 | `--token` | Alternative | Legacy default authentication token; prefer `GATELET_TOKEN` in production |
 | `--tokens` | Alternative | Comma-separated rotation set, for example `current=new,previous=old,retired=older:inactive`; prefer `GATELET_TOKENS` in production |
+| `--admin-user` | No | Basic Auth username for `/admin`, `/__gatelet/status`, and `/metrics`; prefer `GATELET_ADMIN_USER` in production |
+| `--admin-password` | No | Basic Auth password for `/admin`, `/__gatelet/status`, and `/metrics`; prefer `GATELET_ADMIN_PASSWORD` in production |
 | `--reserved-names` | No | Comma-separated extra tunnel names to reject; `admin`, `www`, `api`, and `metrics` are always reserved |
 | `--allow-names` | No | Comma-separated tunnel names allowed to connect; empty allows any non-reserved valid name |
 | `--log-format` | No | Daemon log format: `text` or `json`; default `text` |
@@ -342,12 +355,15 @@ List filters split on spaces and AND every term across method, path, status, rem
 
 Tunnel lifecycle logs include `connected_at`, `last_seen`, request count, forwarded request bytes, response body bytes, and disconnect reason. Duplicate tunnel registration attempts are rejected with `ERR tunnel name already in use` and logged with the active and duplicate remote addresses.
 
-`gateletd` exposes daemon-only admin endpoints on the base domain, not on tunnel subdomains:
+When admin credentials are configured, `gateletd` exposes Basic Auth protected daemon-only admin endpoints on the base domain, not on tunnel subdomains:
 
 ```text
+GET /admin              # HTML operations dashboard
 GET /__gatelet/status  # JSON uptime, active tunnels, request and byte counters
 GET /metrics           # Prometheus text metrics
 ```
+
+The dashboard shows uptime, active tunnel counts, aggregate traffic, per-tunnel status counters, and a disconnect action for active tunnels. Dashboard actions require Basic Auth and an embedded action token.
 
 Requests to the same paths on a tunnel subdomain, such as `https://demo.example.com/metrics`, are still forwarded to the local target.
 

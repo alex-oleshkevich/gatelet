@@ -111,6 +111,7 @@ func (m model) selectedEvent() (client.RequestEvent, bool) {
 		Time:            item.StartedAt,
 		Method:          item.Method,
 		RequestURI:      item.RequestURI,
+		TargetURL:       item.TargetURL,
 		Host:            item.Host,
 		RemoteAddr:      item.RemoteAddr,
 		RequestHeader:   http.Header(item.RequestHeader),

@@ -358,6 +358,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		Time:       time.Now(),
 		Method:     req.Method,
 		RequestURI: requestURI,
+		TargetURL:  targetURL,
 		Host:       req.Host,
 		RemoteAddr: remoteAddr,
 	})
@@ -366,6 +367,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local request")
 		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
+		event.TargetURL = targetURL
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
@@ -377,6 +379,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "local target unavailable")
 		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
+		event.TargetURL = targetURL
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
@@ -388,6 +391,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	if err := resp.Write(stream); err != nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		event := failedEvent(id, req, reqPreview, respPreview, started, err, ErrorKindTunnel)
+		event.TargetURL = targetURL
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
@@ -400,6 +404,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		Time:            time.Now(),
 		Method:          req.Method,
 		RequestURI:      requestURI,
+		TargetURL:       targetURL,
 		Host:            req.Host,
 		RemoteAddr:      remoteAddr,
 		RequestHeader:   cloneHeader(req.Header),
