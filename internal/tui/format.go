@@ -135,22 +135,17 @@ func relativeAge(now, started time.Time) string {
 	case d < time.Minute:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
+		minutes := int(d.Minutes())
+		seconds := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
 	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
+		hours := int(d.Hours())
+		minutes := int(d.Minutes()) % 60
+		seconds := int(d.Seconds()) % 60
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
-}
-
-func isOld(now, started time.Time) bool {
-	if started.IsZero() {
-		return false
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	return now.Sub(started) >= oldRequestAt
 }
 
 func formatBytes(size int64) string {

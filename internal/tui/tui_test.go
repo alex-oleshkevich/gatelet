@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"gatelet/internal/client"
 )
@@ -148,6 +149,31 @@ func TestListViewShowsApprovedColumns(t *testing.T) {
 		if strings.Contains(plain, notWant) {
 			t.Fatalf("list view included %q:\n%s", notWant, plain)
 		}
+	}
+}
+
+func TestOldRequestRowsKeepNormalStyling(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(oldProfile)
+	})
+
+	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
+	row := renderRequestRow(requestItem{
+		Method:      "POST",
+		RequestURI:  "/login",
+		RemoteAddr:  "203.0.113.44:54321",
+		StatusCode:  422,
+		RequestSize: 1400,
+		StartedAt:   now.Add(-45 * time.Minute),
+	}, 120, now, false)
+
+	if strings.Contains(row, dimStyle.Render("POST")) {
+		t.Fatalf("old request row was dimmed:\n%s", stripANSI(row))
+	}
+	if !strings.Contains(row, status4xxStyle.Render(padRight("422", 7))) {
+		t.Fatalf("old request row lost normal status styling:\n%s", row)
 	}
 }
 
@@ -339,6 +365,68 @@ func TestClientDoneErrorMarksDisconnected(t *testing.T) {
 	}
 	if updated.message != "control session closed" {
 		t.Fatalf("message = %q, want control session closed", updated.message)
+	}
+}
+
+func TestReconnectEventMarksTUIReconnecting(t *testing.T) {
+	events := make(chan client.RequestEvent)
+	m := model{
+		ctx:    context.Background(),
+		status: "online",
+		events: events,
+		index:  make(map[uint64]int),
+	}
+
+	got, cmd := m.Update(eventMsg(client.RequestEvent{
+		Type:  client.EventTunnelReconnecting,
+		Error: "control session closed",
+		Time:  time.Now(),
+	}))
+	updated := got.(model)
+	if updated.status != "reconnecting" {
+		t.Fatalf("status = %q, want reconnecting", updated.status)
+	}
+	if !strings.Contains(updated.message, "reconnecting") {
+		t.Fatalf("message = %q, want reconnecting detail", updated.message)
+	}
+	if len(updated.requests) != 0 {
+		t.Fatalf("requests = %d, want 0 for lifecycle event", len(updated.requests))
+	}
+	if cmd == nil {
+		t.Fatal("cmd = nil, want waitEvent command")
+	}
+}
+
+func TestResumeMessageClearsAfterQueuedRequestStartsForwarding(t *testing.T) {
+	pause := client.NewPauseController()
+	m := model{
+		ctx:    context.Background(),
+		pause:  pause,
+		status: "online",
+		index:  make(map[uint64]int),
+	}
+
+	updated, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	got := updated.(model)
+	if !got.paused {
+		t.Fatal("paused = false, want true")
+	}
+
+	updated, _ = got.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	got = updated.(model)
+	if got.message != "resumed: queued requests are forwarding" {
+		t.Fatalf("message = %q, want resume forwarding message", got.message)
+	}
+
+	got.applyEvent(client.RequestEvent{
+		ID:         1,
+		Type:       client.EventRequestForwarding,
+		Method:     http.MethodGet,
+		RequestURI: "/queued",
+		Time:       time.Now(),
+	})
+	if got.message != "" {
+		t.Fatalf("message = %q, want cleared after queue starts forwarding", got.message)
 	}
 }
 
@@ -1004,6 +1092,13 @@ func TestDetailViewReplaysSelectedRequest(t *testing.T) {
 	if result.ID != 99 || result.StatusCode != 202 || result.RemoteAddr != "local replay" {
 		t.Fatalf("replay result = %+v", result)
 	}
+	selected, ok := got.selectedRequest()
+	if !ok {
+		t.Fatal("selectedRequest returned false")
+	}
+	if selected.ID != 1 {
+		t.Fatalf("selected request ID = %d, want original request ID 1", selected.ID)
+	}
 	if !strings.Contains(got.message, "replay 202") {
 		t.Fatalf("message = %q, want replay status", got.message)
 	}
@@ -1074,15 +1169,14 @@ func TestTruncatePreservesUTF8(t *testing.T) {
 	}
 }
 
-func TestRelativeAgeAndOldRequests(t *testing.T) {
+func TestRelativeAgeKeepsSecondsAfterMinute(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
-	started := now.Add(-31 * time.Minute)
 
-	if got := relativeAge(now, started); got != "31m" {
-		t.Fatalf("relativeAge = %q, want %q", got, "31m")
+	if got := relativeAge(now, now.Add(-75*time.Second)); got != "1m15s" {
+		t.Fatalf("relativeAge = %q, want %q", got, "1m15s")
 	}
-	if !isOld(now, started) {
-		t.Fatal("isOld returned false for request older than 30 minutes")
+	if got := relativeAge(now.Add(time.Second), now.Add(-75*time.Second)); got != "1m16s" {
+		t.Fatalf("relativeAge after tick = %q, want %q", got, "1m16s")
 	}
 }
 

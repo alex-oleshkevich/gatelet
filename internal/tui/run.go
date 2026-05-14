@@ -11,7 +11,6 @@ import (
 
 const (
 	maxRequests  = 500
-	oldRequestAt = 30 * time.Minute
 	tickInterval = time.Second
 )
 
@@ -19,8 +18,9 @@ type eventMsg client.RequestEvent
 type clientDoneMsg struct{ err error }
 type tickMsg time.Time
 type replayDoneMsg struct {
-	event client.RequestEvent
-	err   error
+	sourceID uint64
+	event    client.RequestEvent
+	err      error
 }
 
 func Run(ctx context.Context, config client.Config) error {

@@ -45,6 +45,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	writeStartup(stdout, config)
 	config.RequestLog = stdout
+	config.StatusLog = stderr
 	if err := client.Run(ctx, config); err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1

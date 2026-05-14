@@ -110,9 +110,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tick()
 	case eventMsg:
 		event := client.RequestEvent(msg)
-		if event.Type == client.EventTunnelConnected {
+		switch event.Type {
+		case client.EventTunnelConnected:
 			m.status = "online"
+			if strings.HasPrefix(m.message, "reconnecting:") {
+				m.message = "reconnected"
+			}
 			return m, tea.Batch(waitEvent(m.events), probeTargetHealth(m.target))
+		case client.EventTunnelReconnecting:
+			m.status = "reconnecting"
+			if event.Duration > 0 {
+				m.message = fmt.Sprintf("reconnecting: %s; retry in %s", event.Error, event.Duration.Round(time.Millisecond))
+			} else {
+				m.message = "reconnecting: " + event.Error
+			}
+			return m, waitEvent(m.events)
 		}
 		m.applyEvent(event)
 		m.clampSelection()
@@ -133,7 +145,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case replayDoneMsg:
 		if msg.event.ID != 0 {
 			m.applyEvent(msg.event)
-			m.clampSelection()
+			if msg.sourceID == 0 || !m.selectRequestID(msg.sourceID) {
+				m.clampSelection()
+			}
 		}
 		if msg.err != nil {
 			m.message = "replay failed: " + msg.err.Error()
@@ -386,6 +400,7 @@ func (m *model) applyEvent(event client.RequestEvent) {
 		mergeRequestItem(&current, item)
 		m.requests[idx] = current
 		m.updateTargetHealth(current)
+		m.clearResumeMessageIfQueueDrained(event)
 		return
 	}
 
@@ -396,6 +411,7 @@ func (m *model) applyEvent(event client.RequestEvent) {
 		m.requests = m.requests[:maxRequests]
 		m.rebuildIndex()
 	}
+	m.clearResumeMessageIfQueueDrained(event)
 }
 
 func mergeRequestItem(dst *requestItem, src requestItem) {
@@ -508,6 +524,30 @@ func (m *model) clampSelection() {
 	}
 	if m.detailScroll < 0 {
 		m.detailScroll = 0
+	}
+}
+
+func (m *model) selectRequestID(id uint64) bool {
+	visible := m.visibleRequests()
+	for i, item := range visible {
+		if item.ID == id {
+			m.selected = i
+			m.clampSelection()
+			return true
+		}
+	}
+	return false
+}
+
+func (m *model) clearResumeMessageIfQueueDrained(event client.RequestEvent) {
+	if m.paused || m.message != "resumed: queued requests are forwarding" {
+		return
+	}
+	switch event.Type {
+	case client.EventRequestForwarding, client.EventResponseStarted, client.EventRequestCompleted, client.EventRequestFailed:
+		if m.pause == nil || m.pause.QueueDepth() == 0 {
+			m.message = ""
+		}
 	}
 }
 

@@ -42,9 +42,6 @@ func renderRequestRow(item requestItem, width int, now time.Time, selected bool)
 	case selected:
 		line := visibleWindow(requestRowLine(item, cols, now, false), 0, innerWidth)
 		return selectedStyle.Render(line)
-	case isOld(now, item.StartedAt):
-		line := visibleWindow(requestRowLine(item, cols, now, false), 0, innerWidth)
-		return rowStyle.Render(dimStyle.Render(line))
 	default:
 		line := visibleWindow(requestRowLine(item, cols, now, true), 0, innerWidth)
 		return rowStyle.Render(line)

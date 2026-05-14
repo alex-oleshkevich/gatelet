@@ -18,6 +18,109 @@ import (
 	"gatelet/internal/protocol"
 )
 
+func TestRunReconnectsAfterTransientControlClose(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+
+	const token = "secret-token"
+	attempts := make(chan int, 2)
+	holdSecond := make(chan struct{})
+	go func() {
+		for i := 1; i <= 2; i++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			attempts <- i
+			completeTestHandshake(t, conn, token)
+			if i == 1 {
+				_ = conn.Close()
+				continue
+			}
+			<-holdSecond
+			_ = conn.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer close(holdSecond)
+
+	events := make(chan RequestEvent, 8)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Name:                  "alex",
+			ServerAddr:            ln.Addr().String(),
+			Target:                "127.0.0.1:3000",
+			Token:                 token,
+			Events:                events,
+			ReconnectInitialDelay: 10 * time.Millisecond,
+			ReconnectMaxDelay:     10 * time.Millisecond,
+		})
+	}()
+
+	waitForAttempt(t, attempts, 1)
+	waitForLifecycleEvent(t, events, EventTunnelConnected)
+	waitForLifecycleEvent(t, events, EventTunnelReconnecting)
+	waitForAttempt(t, attempts, 2)
+	waitForLifecycleEvent(t, events, EventTunnelConnected)
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run returned error after cancel: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop after cancel")
+	}
+}
+
+func TestRunDoesNotReconnectAfterServerRejection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen returned error: %v", err)
+	}
+	defer ln.Close()
+
+	attempts := make(chan int, 2)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		attempts <- 1
+		_, _ = protocol.ReadLine(conn, 1024)
+		_, _ = conn.Write([]byte(protocol.HandshakeNameInUse))
+	}()
+
+	err = Run(context.Background(), Config{
+		Name:                  "alex",
+		ServerAddr:            ln.Addr().String(),
+		Target:                "127.0.0.1:3000",
+		Token:                 "secret-token",
+		ReconnectInitialDelay: 10 * time.Millisecond,
+		ReconnectMaxDelay:     10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !strings.Contains(err.Error(), "tunnel name already in use") {
+		t.Fatalf("error = %q, want duplicate-name error", err.Error())
+	}
+	waitForAttempt(t, attempts, 1)
+	select {
+	case attempt := <-attempts:
+		t.Fatalf("unexpected reconnect attempt %d after server rejection", attempt)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestRunDoesNotSendTokenInInitialHandshake(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -712,6 +815,72 @@ func unavailableLocalTarget(t *testing.T) string {
 		t.Fatalf("Close returned error: %v", err)
 	}
 	return "http://" + addr
+}
+
+func completeTestHandshake(t *testing.T, conn net.Conn, token string) {
+	t.Helper()
+
+	line, err := protocol.ReadLine(conn, 1024)
+	if err != nil {
+		t.Errorf("ReadLine hello returned error: %v", err)
+		return
+	}
+	hello, err := protocol.ParseClientHello(line)
+	if err != nil {
+		t.Errorf("ParseClientHello returned error: %v", err)
+		return
+	}
+	challenge := protocol.ServerChallenge{Nonce: "nonce-value"}
+	if err := json.NewEncoder(conn).Encode(challenge); err != nil {
+		t.Errorf("Encode challenge returned error: %v", err)
+		return
+	}
+	line, err = protocol.ReadLine(conn, 1024)
+	if err != nil {
+		t.Errorf("ReadLine response returned error: %v", err)
+		return
+	}
+	response, err := protocol.ParseClientChallengeResponse(line)
+	if err != nil {
+		t.Errorf("ParseClientChallengeResponse returned error: %v", err)
+		return
+	}
+	if !protocol.ValidChallengeResponse(hello.Name, challenge.Nonce, token, response.Response) {
+		t.Errorf("invalid challenge response for %q", hello.Name)
+		return
+	}
+	if _, err := conn.Write([]byte(protocol.HandshakeOK)); err != nil {
+		t.Errorf("Write handshake OK returned error: %v", err)
+	}
+}
+
+func waitForAttempt(t *testing.T, attempts <-chan int, want int) {
+	t.Helper()
+
+	select {
+	case got := <-attempts:
+		if got != want {
+			t.Fatalf("attempt = %d, want %d", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for attempt %d", want)
+	}
+}
+
+func waitForLifecycleEvent(t *testing.T, events <-chan RequestEvent, want EventType) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s event", want)
+		}
+	}
 }
 
 type requestLogRecorder struct {

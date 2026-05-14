@@ -96,7 +96,7 @@ func (m model) replaySelectedRequest() (tea.Model, tea.Cmd) {
 	m.message = "replaying " + event.RequestLine()
 	return m, func() tea.Msg {
 		result, err := replay(ctx, target, event)
-		return replayDoneMsg{event: result, err: err}
+		return replayDoneMsg{sourceID: event.ID, event: result, err: err}
 	}
 }
 

@@ -22,13 +22,14 @@ const (
 type EventType string
 
 const (
-	EventTunnelConnected   EventType = "tunnel_connected"
-	EventRequestReceived   EventType = "request_received"
-	EventRequestQueued     EventType = "request_queued"
-	EventRequestForwarding EventType = "request_forwarding"
-	EventResponseStarted   EventType = "response_started"
-	EventRequestCompleted  EventType = "request_completed"
-	EventRequestFailed     EventType = "request_failed"
+	EventTunnelConnected    EventType = "tunnel_connected"
+	EventTunnelReconnecting EventType = "tunnel_reconnecting"
+	EventRequestReceived    EventType = "request_received"
+	EventRequestQueued      EventType = "request_queued"
+	EventRequestForwarding  EventType = "request_forwarding"
+	EventResponseStarted    EventType = "response_started"
+	EventRequestCompleted   EventType = "request_completed"
+	EventRequestFailed      EventType = "request_failed"
 )
 
 type ErrorKind string

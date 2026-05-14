@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -23,6 +24,8 @@ import (
 )
 
 const maxHandshakeResponseBytes = 1024
+const defaultReconnectInitialDelay = time.Second
+const defaultReconnectMaxDelay = 30 * time.Second
 
 var localHTTPClient = newLocalHTTPClient()
 
@@ -37,14 +40,17 @@ type Config struct {
 	ControlTLS    bool
 	ClientVersion string
 
-	Events            chan<- RequestEvent
-	PauseController   *PauseController
-	PauseTimeout      time.Duration
-	PreviewLimit      int
-	RequestLog        io.Writer
-	LogFormat         LogFormat
-	HeartbeatInterval time.Duration
-	HeartbeatTimeout  time.Duration
+	Events                chan<- RequestEvent
+	PauseController       *PauseController
+	PauseTimeout          time.Duration
+	PreviewLimit          int
+	RequestLog            io.Writer
+	StatusLog             io.Writer
+	LogFormat             LogFormat
+	HeartbeatInterval     time.Duration
+	HeartbeatTimeout      time.Duration
+	ReconnectInitialDelay time.Duration
+	ReconnectMaxDelay     time.Duration
 
 	ControlCACertFile         string
 	ControlServerName         string
@@ -70,10 +76,51 @@ func Run(ctx context.Context, config Config) error {
 	if config.TokenID == "" {
 		config.TokenID = protocol.DefaultTokenID
 	}
+	if config.ReconnectInitialDelay == 0 {
+		config.ReconnectInitialDelay = defaultReconnectInitialDelay
+	}
+	if config.ReconnectMaxDelay == 0 {
+		config.ReconnectMaxDelay = defaultReconnectMaxDelay
+	}
 
+	attempt := 0
+	for {
+		connected, err := runSession(ctx, config)
+		if err == nil || ctx.Err() != nil {
+			return nil
+		}
+		if !isReconnectableControlError(err) {
+			return err
+		}
+		if connected {
+			attempt = 0
+		}
+
+		attempt++
+		delay := reconnectDelay(attempt, config.ReconnectInitialDelay, config.ReconnectMaxDelay)
+		event := RequestEvent{
+			Type:     EventTunnelReconnecting,
+			Time:     time.Now(),
+			Duration: delay,
+			Error:    err.Error(),
+		}
+		logStatus(config.StatusLog, config.LogFormat, event)
+		emit(config.Events, event)
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+	}
+}
+
+func runSession(ctx context.Context, config Config) (bool, error) {
 	conn, err := dialControl(ctx, config)
 	if err != nil {
-		return fmt.Errorf("connect server: %w", err)
+		return false, fmt.Errorf("connect server: %w", err)
 	}
 
 	go func() {
@@ -87,22 +134,22 @@ func Run(ctx context.Context, config Config) error {
 		ClientVersion:   config.ClientVersion,
 	}); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("send client hello: %w", err)
+		return false, fmt.Errorf("send client hello: %w", err)
 	}
 
 	line, err := protocol.ReadLine(conn, maxHandshakeResponseBytes)
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("read server challenge: %w", err)
+		return false, fmt.Errorf("read server challenge: %w", err)
 	}
 	if strings.HasPrefix(string(line), "ERR ") {
 		_ = conn.Close()
-		return fmt.Errorf("%s", strings.TrimSpace(string(line)))
+		return false, terminalControlError{err: fmt.Errorf("%s", strings.TrimSpace(string(line)))}
 	}
 	challenge, err := protocol.ParseServerChallenge(line)
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("parse server challenge: %w", err)
+		return false, terminalControlError{err: fmt.Errorf("parse server challenge: %w", err)}
 	}
 
 	if err := json.NewEncoder(conn).Encode(protocol.ClientChallengeResponse{
@@ -110,27 +157,27 @@ func Run(ctx context.Context, config Config) error {
 		Response: protocol.ChallengeResponse(config.Name, challenge.Nonce, config.Token),
 	}); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("send challenge response: %w", err)
+		return false, fmt.Errorf("send challenge response: %w", err)
 	}
 
 	line, err = protocol.ReadLine(conn, maxHandshakeResponseBytes)
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("read authentication response: %w", err)
+		return false, fmt.Errorf("read authentication response: %w", err)
 	}
 	if strings.HasPrefix(string(line), "ERR ") {
 		_ = conn.Close()
-		return fmt.Errorf("%s", strings.TrimSpace(string(line)))
+		return false, terminalControlError{err: fmt.Errorf("%s", strings.TrimSpace(string(line)))}
 	}
 	if string(line) != protocol.HandshakeOK {
 		_ = conn.Close()
-		return fmt.Errorf("authentication failed")
+		return false, terminalControlError{err: fmt.Errorf("authentication failed")}
 	}
 
 	session, err := yamux.Client(conn, yamuxConfig(config.HeartbeatInterval, config.HeartbeatTimeout))
 	if err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("start tunnel session: %w", err)
+		return false, fmt.Errorf("start tunnel session: %w", err)
 	}
 	defer session.Close()
 	emit(config.Events, RequestEvent{
@@ -142,16 +189,90 @@ func Run(ctx context.Context, config Config) error {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil
+				return true, nil
 			}
 			if session.IsClosed() {
-				return fmt.Errorf("control session closed")
+				return true, fmt.Errorf("control session closed")
 			}
-			return fmt.Errorf("accept tunnel stream: %w", err)
+			return true, fmt.Errorf("accept tunnel stream: %w", err)
 		}
 
 		go handleStream(ctx, stream, config)
 	}
+}
+
+type terminalControlError struct {
+	err error
+}
+
+func (e terminalControlError) Error() string {
+	return e.err.Error()
+}
+
+func (e terminalControlError) Unwrap() error {
+	return e.err
+}
+
+func isReconnectableControlError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var terminal terminalControlError
+	if errors.As(err, &terminal) {
+		return false
+	}
+	if strings.Contains(err.Error(), "--control-plaintext") {
+		return false
+	}
+	return true
+}
+
+func reconnectDelay(attempt int, initial time.Duration, maxDelay time.Duration) time.Duration {
+	if initial <= 0 {
+		initial = defaultReconnectInitialDelay
+	}
+	if maxDelay <= 0 {
+		maxDelay = defaultReconnectMaxDelay
+	}
+	delay := initial
+	for i := 1; i < attempt; i++ {
+		if delay >= maxDelay/2 {
+			return maxDelay
+		}
+		delay *= 2
+	}
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func logStatus(w io.Writer, format LogFormat, event RequestEvent) {
+	if w == nil {
+		return
+	}
+	if format == LogFormatJSON || format == LogFormatJSONL {
+		data, err := json.Marshal(statusLogRecord{
+			Type:       "status",
+			Event:      string(event.Type),
+			Error:      event.Error,
+			RetryInMS:  event.Duration.Milliseconds(),
+			OccurredAt: event.Time.Format(time.RFC3339Nano),
+		})
+		if err == nil {
+			_, _ = fmt.Fprintln(w, string(data))
+		}
+		return
+	}
+	_, _ = fmt.Fprintf(w, "reconnecting: %s; retry in %s\n", event.Error, event.Duration.Round(time.Millisecond))
+}
+
+type statusLogRecord struct {
+	Type       string `json:"type"`
+	Event      string `json:"event"`
+	Error      string `json:"error,omitempty"`
+	RetryInMS  int64  `json:"retry_in_ms,omitempty"`
+	OccurredAt string `json:"time"`
 }
 
 func dialControl(ctx context.Context, config Config) (net.Conn, error) {
