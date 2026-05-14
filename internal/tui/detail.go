@@ -41,15 +41,14 @@ func (m model) renderBody(width, height int) string {
 		return fitBlock(rowStyle.Render(mutedStyle.Render("No request selected.")), width, height)
 	}
 
-	content := formatBodyView(item, width, m.plainBody, m.inspectorTab)
-	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	lines := bodyViewLines(item, width, m.plainBody, m.inspectorTab)
 	visible := max(1, height)
 	start := min(max(0, m.bodyScroll), max(0, len(lines)-visible))
 	end := min(len(lines), start+visible)
 
 	var b strings.Builder
 	for _, line := range lines[start:end] {
-		b.WriteString(visibleWindow(line, 0, width))
+		b.WriteString(padRight(line, width))
 		b.WriteString("\n")
 	}
 	if len(lines) > visible && end <= len(lines) {
@@ -62,11 +61,21 @@ func (m model) renderBody(width, height int) string {
 func formatBodyView(item requestItem, width int, plainBody bool, tab inspectorTab) string {
 	var b strings.Builder
 	if tab == inspectorTabResponse {
-		writePreview(&b, bodyTitle("Body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody, bodyStateResponse(item))
+		writePreview(&b, "Body", item.ResponsePreview, width, plainBody, bodyStateResponse(item), 0)
 	} else {
-		writePreview(&b, bodyTitle("Body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody, "")
+		writePreview(&b, "Body", item.RequestPreview, width, plainBody, "", 0)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func bodyViewLines(item requestItem, width int, plainBody bool, tab inspectorTab) []string {
+	content := formatBodyView(item, width, plainBody, tab)
+	content = wrapVisibleBlock(content, width)
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	return lines
 }
 
 func formatInspector(item requestItem, width int, now time.Time, plainBody bool, tab inspectorTab) string {
@@ -105,7 +114,7 @@ func formatRequestInspector(item requestItem, width int, now time.Time, plainBod
 	b.WriteString(rowStyle.Render(headStyle.Render("Request headers")))
 	b.WriteString("\n")
 	writeHeaders(&b, item.RequestHeader, 20)
-	writePreview(&b, bodyTitle("Body", item.RequestPreview, plainBody), item.RequestPreview, width, plainBody, "")
+	writePreview(&b, "Body", item.RequestPreview, width, plainBody, "", max(20, width-4))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -132,7 +141,7 @@ func formatResponseInspector(item requestItem, width int, plainBody bool) string
 	b.WriteString(rowStyle.Render(headStyle.Render("Response headers")))
 	b.WriteString("\n")
 	writeHeaders(&b, item.ResponseHeader, 20)
-	writePreview(&b, bodyTitle("Body", item.ResponsePreview, plainBody), item.ResponsePreview, width, plainBody, bodyStateResponse(item))
+	writePreview(&b, "Body", item.ResponsePreview, width, plainBody, bodyStateResponse(item), max(20, width-4))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -194,15 +203,7 @@ func writeHeaders(b *strings.Builder, header map[string][]string, limit int) {
 	}
 }
 
-func bodyTitle(title string, preview client.BodyPreview, plain bool) string {
-	mode := "plain"
-	if !plain && canFormatJSON(preview) {
-		mode = "formatted json"
-	}
-	return title + " [" + mode + "]"
-}
-
-func writePreview(b *strings.Builder, title string, preview client.BodyPreview, width int, plain bool, state string) {
+func writePreview(b *strings.Builder, title string, preview client.BodyPreview, width int, plain bool, state string, limit int) {
 	b.WriteString("\n")
 	b.WriteString(rowStyle.Render(headStyle.Render(title)))
 	b.WriteString("\n")
@@ -226,7 +227,7 @@ func writePreview(b *strings.Builder, title string, preview client.BodyPreview, 
 		fmt.Fprintf(b, "  %s\n", mutedStyle.Render(capturedSummary(preview)))
 		return
 	}
-	text := previewText(preview, plain, max(20, width-4))
+	text := previewText(preview, plain, limit)
 	text = strings.ReplaceAll(text, "\n", "\n  ")
 	fmt.Fprintf(b, "  %s\n", text)
 	if preview.Omitted {
@@ -261,13 +262,20 @@ func capturedSummary(preview client.BodyPreview) string {
 
 func previewText(preview client.BodyPreview, plain bool, limit int) string {
 	if plain {
-		return valStyle.Render(truncate(preview.Text, limit))
+		return valStyle.Render(limitPreviewText(preview.Text, limit))
 	}
 	formatted, ok := formatJSON(preview.Text)
 	if !ok || !canFormatJSON(preview) {
-		return valStyle.Render(truncate(preview.Text, limit))
+		return valStyle.Render(limitPreviewText(preview.Text, limit))
 	}
-	return colorizeJSON(truncate(formatted, limit))
+	return colorizeJSON(limitPreviewText(formatted, limit))
+}
+
+func limitPreviewText(text string, limit int) string {
+	if limit <= 0 {
+		return text
+	}
+	return truncate(text, limit)
 }
 
 func canFormatJSON(preview client.BodyPreview) bool {

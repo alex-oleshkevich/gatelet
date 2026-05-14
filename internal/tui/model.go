@@ -179,15 +179,29 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "tab", "l", "right":
 		if m.mode == viewInspector || m.mode == viewBody {
+			if m.inspectorTab == inspectorTabResponse {
+				break
+			}
 			m.inspectorTab = inspectorTabResponse
 			m.detailScroll = 0
 			m.bodyScroll = 0
+			m.clampSelection()
+			m.clampDetailScroll()
+			m.clampBodyScroll()
+			return m, clearScreen
 		}
 	case "h", "left":
 		if m.mode == viewInspector || m.mode == viewBody {
+			if m.inspectorTab == inspectorTabRequest {
+				break
+			}
 			m.inspectorTab = inspectorTabRequest
 			m.detailScroll = 0
 			m.bodyScroll = 0
+			m.clampSelection()
+			m.clampDetailScroll()
+			m.clampBodyScroll()
+			return m, clearScreen
 		}
 	case "/":
 		if m.mode == viewList {
@@ -282,6 +296,10 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.clampDetailScroll()
 	m.clampBodyScroll()
 	return m, nil
+}
+
+func clearScreen() tea.Msg {
+	return tea.ClearScreen()
 }
 
 func (m model) updateFilter(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -414,9 +432,9 @@ func (m *model) updateTargetHealth(item requestItem) {
 	switch {
 	case item.ErrorKind == client.ErrorKindLocalTarget:
 		m.targetHealth = targetHealthDown
-	case item.State == client.EventRequestCompleted && item.StatusCode >= 500:
+	case (item.State == client.EventResponseStarted || item.State == client.EventRequestCompleted) && item.StatusCode >= 500:
 		m.targetHealth = targetHealthDegraded
-	case item.State == client.EventRequestCompleted && item.StatusCode > 0:
+	case (item.State == client.EventResponseStarted || item.State == client.EventRequestCompleted) && item.StatusCode > 0:
 		m.targetHealth = targetHealthOK
 	}
 }
@@ -504,7 +522,7 @@ func (m *model) clampBodyScroll() {
 		m.bodyScroll = 0
 		return
 	}
-	lines := strings.Split(strings.TrimRight(formatBodyView(item, max(20, m.width), m.plainBody, m.inspectorTab), "\n"), "\n")
+	lines := bodyViewLines(item, max(20, m.width), m.plainBody, m.inspectorTab)
 	maxScroll := max(0, len(lines)-m.bodyHeight())
 	if m.bodyScroll > maxScroll {
 		m.bodyScroll = maxScroll

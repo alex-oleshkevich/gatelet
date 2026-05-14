@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,44 @@ func TestListViewKeepsHelpBarOnLastLine(t *testing.T) {
 	last := lastLine(view)
 	if !strings.Contains(last, "q quit") {
 		t.Fatalf("last line = %q, want sticky help bar", last)
+	}
+}
+
+func TestInspectorTabSwitchKeepsLinesInsideViewport(t *testing.T) {
+	m := detailActionModel()
+	m.width = 96
+	m.height = 24
+	m.requests[0].RequestURI = "/start/3b3802a8-7b02-4129-99bb-6be3ebd08602"
+	m.requests[0].TargetURL = "http://localhost:8080/start/3b3802a8-7b02-4129-99bb-6be3ebd08602"
+	m.requests[0].RequestHeader["Accept"] = []string{"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"}
+	m.requests[0].RequestHeader["Accept-Language"] = []string{"en-US,en;q=0.9,ru-BY;q=0.8,ru;q=0.7,be-BY;q=0.6,be;q=0.5,pl;q=0.4,de;q=0.3,zh-CN;q=0.2"}
+
+	updated, _ := m.updateKey(tea.KeyMsg{Type: tea.KeyTab})
+	got := updated.(model)
+	view := got.View()
+	if height := lipgloss.Height(view); height != got.height {
+		t.Fatalf("View height = %d, want %d:\n%s", height, got.height, stripANSI(view))
+	}
+	for i, line := range strings.Split(view, "\n") {
+		if width := lipgloss.Width(line); width > got.width {
+			t.Fatalf("line %d width = %d, want <= %d: %q\n%s", i+1, width, got.width, stripANSI(line), stripANSI(view))
+		}
+	}
+	if count := strings.Count(stripANSI(view), "RESPONSE POST FORMAT"); count != 1 {
+		t.Fatalf("footer count = %d, want 1:\n%s", count, stripANSI(view))
+	}
+}
+
+func TestInspectorTabSwitchRequestsScreenClear(t *testing.T) {
+	m := detailActionModel()
+
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd == nil {
+		t.Fatal("tab switch returned nil command, want screen clear command")
+	}
+	got := updated.(model)
+	if got.inspectorTab != inspectorTabResponse {
+		t.Fatalf("inspectorTab = %v, want response", got.inspectorTab)
 	}
 }
 
@@ -105,8 +144,54 @@ func TestHeaderShowsTargetHealth(t *testing.T) {
 	}
 }
 
+func TestHeaderForwardingModeFollowsConnectionStatus(t *testing.T) {
+	m := model{
+		url:          "https://alex.tun.aresa.me",
+		status:       "stopped",
+		targetHealth: targetHealthUnknown,
+		width:        120,
+		height:       12,
+		now:          time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC),
+		index:        make(map[uint64]int),
+	}
+
+	plain := stripANSI(m.View())
+	if strings.Contains(plain, "running") || strings.Contains(plain, "accepting") {
+		t.Fatalf("stopped header should not show active forwarding mode:\n%s", plain)
+	}
+	if !strings.Contains(plain, "idle") {
+		t.Fatalf("stopped header missing idle forwarding mode:\n%s", plain)
+	}
+
+	m.status = "online"
+	plain = stripANSI(m.View())
+	if !strings.Contains(plain, "accepting") {
+		t.Fatalf("online header missing accepting forwarding mode:\n%s", plain)
+	}
+}
+
 func TestTargetHealthUpdatesFromRequestEvents(t *testing.T) {
 	m := model{index: make(map[uint64]int)}
+
+	m.applyEvent(client.RequestEvent{
+		ID:         10,
+		Type:       client.EventResponseStarted,
+		StatusCode: 200,
+		Time:       time.Now(),
+	})
+	if m.targetHealth != targetHealthOK {
+		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthOK)
+	}
+
+	m.applyEvent(client.RequestEvent{
+		ID:         11,
+		Type:       client.EventResponseStarted,
+		StatusCode: 503,
+		Time:       time.Now(),
+	})
+	if m.targetHealth != targetHealthDegraded {
+		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthDegraded)
+	}
 
 	m.applyEvent(client.RequestEvent{
 		ID:         1,
@@ -137,6 +222,22 @@ func TestTargetHealthUpdatesFromRequestEvents(t *testing.T) {
 	})
 	if m.targetHealth != targetHealthDown {
 		t.Fatalf("targetHealth = %q, want %q", m.targetHealth, targetHealthDown)
+	}
+}
+
+func TestClientDoneErrorMarksDisconnected(t *testing.T) {
+	m := model{
+		ctx:    context.Background(),
+		status: "online",
+	}
+
+	got, _ := m.Update(clientDoneMsg{err: errors.New("control session closed")})
+	updated := got.(model)
+	if updated.status != "disconnected" {
+		t.Fatalf("status = %q, want disconnected", updated.status)
+	}
+	if updated.message != "control session closed" {
+		t.Fatalf("message = %q, want control session closed", updated.message)
 	}
 }
 
@@ -317,10 +418,13 @@ func TestInspectorRequestTabFormatsJSONBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{`Body [formatted json]`, `"name": "Alex"`} {
+	for _, want := range []string{`Body`, `"name": "Alex"`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("formatted JSON body missing %q:\n%s", want, plain)
 		}
+	}
+	if strings.Contains(plain, `Body [formatted json]`) {
+		t.Fatalf("formatted JSON label still rendered:\n%s", plain)
 	}
 	if strings.Contains(plain, `{"name":"Alex"}`) {
 		t.Fatalf("formatted JSON body still includes raw compact JSON:\n%s", plain)
@@ -386,8 +490,11 @@ func TestInspectorTogglesPlainJSONBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	if !strings.Contains(plain, `Body [plain]`) || !strings.Contains(plain, `{"name":"Alex"}`) {
+	if !strings.Contains(plain, `Body`) || !strings.Contains(plain, `{"name":"Alex"}`) {
 		t.Fatalf("plain body missing raw JSON:\n%s", plain)
+	}
+	if strings.Contains(plain, `Body [plain]`) {
+		t.Fatalf("plain body label still rendered:\n%s", plain)
 	}
 	if strings.Contains(plain, `"name": "Alex"`) {
 		t.Fatalf("plain JSON body was formatted:\n%s", plain)
@@ -448,10 +555,13 @@ func TestBodyViewShowsOnlyActiveInspectorTabBody(t *testing.T) {
 	}
 
 	plain := stripANSI(m.View())
-	for _, want := range []string{"response body", "Body [formatted json]", `"ok": true`} {
+	for _, want := range []string{"response body", "Body", `"ok": true`} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("body view missing %q:\n%s", want, plain)
 		}
+	}
+	if strings.Contains(plain, "Body [formatted json]") {
+		t.Fatalf("body view still includes formatted label:\n%s", plain)
 	}
 	for _, notWant := range []string{"Request headers", "User-Agent: curl/8.7.1", `"name": "Alex"`} {
 		if strings.Contains(plain, notWant) {
@@ -553,6 +663,48 @@ func TestBodyViewTogglesPlainAndScrollsIndependently(t *testing.T) {
 	}
 	if got.detailScroll != 9 {
 		t.Fatalf("detailScroll = %d, want unchanged detail scroll", got.detailScroll)
+	}
+}
+
+func TestBodyViewShowsFullCapturedPreview(t *testing.T) {
+	m := detailActionModel()
+	m.mode = viewBody
+	m.width = 40
+	m.height = 12
+	body := strings.Repeat("0123456789", 20) + "THE-END"
+	m.requests[0].RequestPreview = client.BodyPreview{
+		Text:        body,
+		Size:        int64(len(body)),
+		Captured:    int64(len(body)),
+		ContentType: "text/plain",
+	}
+
+	plain := stripANSI(formatBodyView(m.requests[0], m.width, true, inspectorTabRequest))
+	if !strings.Contains(plain, "THE-END") {
+		t.Fatalf("body view content was truncated:\n%s", plain)
+	}
+	if strings.Contains(plain, "...") {
+		t.Fatalf("body view rendered truncation marker:\n%s", plain)
+	}
+
+	lines := bodyViewLines(m.requests[0], m.width, true, inspectorTabRequest)
+	if len(lines) < 4 {
+		t.Fatalf("body view did not wrap long captured content, lines=%d:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+}
+
+func TestBodyViewStatusLabelOmitsFormatMode(t *testing.T) {
+	m := detailActionModel()
+	m.mode = viewBody
+	m.plainBody = false
+
+	if got := m.statusLabel(); got != "BODY REQUEST" {
+		t.Fatalf("statusLabel = %q, want BODY REQUEST", got)
+	}
+
+	m.plainBody = true
+	if got := m.statusLabel(); got != "BODY REQUEST" {
+		t.Fatalf("plain statusLabel = %q, want BODY REQUEST", got)
 	}
 }
 

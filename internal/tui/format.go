@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"gatelet/internal/client"
 )
@@ -67,88 +67,47 @@ func visibleWindow(s string, start, width int) string {
 	if start < 0 {
 		start = 0
 	}
-	var b strings.Builder
-	col := 0
-	written := 0
-	for i := 0; i < len(s); {
-		r, size := rune(s[i]), 1
-		if r >= utf8.RuneSelf {
-			r, size = utf8.DecodeRuneInString(s[i:])
-		}
-		if r == '\x1b' {
-			end := ansiEnd(s, i)
-			if col >= start && written < width {
-				b.WriteString(s[i:end])
-			}
-			i = end
-			continue
-		}
-		if col >= start && written < width {
-			b.WriteString(s[i : i+size])
-			written++
-		}
-		col++
-		if written >= width {
-			break
-		}
-		i += size
-	}
-	return b.String()
+	return ansi.Cut(s, start, start+width)
 }
 
-func ansiEnd(s string, start int) int {
-	if start+1 >= len(s) {
-		return start + 1
+func wrapVisibleBlock(s string, width int) string {
+	if width <= 0 {
+		return ""
 	}
-	if s[start+1] == '[' {
-		for i := start + 2; i < len(s); i++ {
-			if s[i] >= 0x40 && s[i] <= 0x7e {
-				return i + 1
-			}
+	lines := strings.Split(s, "\n")
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if ansi.StringWidth(line) <= width {
+			wrapped = append(wrapped, line)
+			continue
 		}
+		wrapped = append(wrapped, strings.Split(ansi.Hardwrap(line, width, false), "\n")...)
 	}
-	return start + 1
+	return strings.Join(wrapped, "\n")
 }
 
 func truncateVisible(s string, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
-	if lipgloss.Width(s) <= limit {
+	if ansi.StringWidth(s) <= limit {
 		return s
 	}
-	return truncate(stripANSI(s), limit)
+	return ansi.Truncate(s, limit, "...")
 }
 
 func stripANSI(s string) string {
-	var b strings.Builder
-	inEscape := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inEscape {
-			if c >= '@' && c <= '~' {
-				inEscape = false
-			}
-			continue
-		}
-		if c == 0x1b {
-			inEscape = true
-			continue
-		}
-		b.WriteByte(c)
-	}
-	return b.String()
+	return ansi.Strip(s)
 }
 
 func truncate(s string, limit int) string {
-	runes := []rune(s)
-	if len(runes) <= limit {
+	if ansi.StringWidth(s) <= limit {
 		return s
 	}
 	if limit <= 3 {
-		return string(runes[:limit])
+		return ansi.Truncate(s, limit, "")
 	}
-	return string(runes[:limit-3]) + "..."
+	return ansi.Truncate(s, limit, "...")
 }
 
 func remoteIP(remoteAddr string) string {

@@ -137,8 +137,11 @@ func Run(ctx context.Context, config Config) error {
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
-			if ctx.Err() != nil || session.IsClosed() {
+			if ctx.Err() != nil {
 				return nil
+			}
+			if session.IsClosed() {
+				return fmt.Errorf("control session closed")
 			}
 			return fmt.Errorf("accept tunnel stream: %w", err)
 		}

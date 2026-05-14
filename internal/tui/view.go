@@ -61,10 +61,7 @@ func (m model) renderHeader(width int) string {
 	}
 	state := styledConnectionState(m.status)
 	target := styledTargetHealth(m.targetHealth)
-	mode := mutedStyle.Render("running")
-	if m.paused {
-		mode = queuedStyle.Render("paused")
-	}
+	mode := styledForwardingMode(m.status, m.paused)
 	right := fmt.Sprintf("%s  %s  %s  %s", state, target, mode, mutedStyle.Render(fmt.Sprintf("queued %d", queueDepth)))
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 1
@@ -103,11 +100,7 @@ func (m model) statusLabel() string {
 		return strings.ToUpper(m.inspectorTabLabel())
 	}
 	if m.mode == viewBody {
-		mode := "FORMAT"
-		if m.plainBody {
-			mode = "PLAIN"
-		}
-		return "BODY " + strings.ToUpper(m.inspectorTabLabel()) + " " + mode
+		return "BODY " + strings.ToUpper(m.inspectorTabLabel())
 	}
 	visible := len(m.visibleRequests())
 	if visible == 0 {
@@ -178,6 +171,16 @@ func styledTargetHealth(health targetHealth) string {
 	default:
 		return mutedStyle.Render(label)
 	}
+}
+
+func styledForwardingMode(status string, paused bool) string {
+	if paused {
+		return queuedStyle.Render("paused")
+	}
+	if status != "online" {
+		return mutedStyle.Render("idle")
+	}
+	return status2xxStyle.Render("accepting")
 }
 
 func fitBlock(s string, width, height int) string {
