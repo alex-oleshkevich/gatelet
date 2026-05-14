@@ -56,7 +56,11 @@ func (m model) renderHeader(width int) string {
 	state := styledConnectionState(m.status)
 	target := styledTargetHealth(m.targetHealth)
 	mode := styledForwardingMode(m.status, m.paused)
-	right := fmt.Sprintf("%s  %s  %s  %s", state, target, mode, mutedStyle.Render(fmt.Sprintf("queued %d", queueDepth)))
+	auth := ""
+	if m.httpBasicAuth {
+		auth = "  " + queuedStyle.Render("auth ON")
+	}
+	right := fmt.Sprintf("%s  %s%s  %s  %s", state, target, auth, mode, mutedStyle.Render(fmt.Sprintf("queued %d", queueDepth)))
 
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right) - 1
 	if gap < 1 {

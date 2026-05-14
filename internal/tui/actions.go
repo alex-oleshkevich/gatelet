@@ -130,6 +130,7 @@ func (m model) selectedEvent() (client.RequestEvent, bool) {
 		ResponseHeader:  http.Header(item.ResponseHeader),
 		RequestPreview:  item.RequestPreview,
 		ResponsePreview: item.ResponsePreview,
+		HTTPBasicAuth:   item.HTTPBasicAuth,
 		StatusCode:      item.StatusCode,
 		RequestSize:     item.RequestSize,
 		ResponseSize:    item.ResponseSize,

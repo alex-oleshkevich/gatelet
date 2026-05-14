@@ -64,6 +64,7 @@ type RequestEvent struct {
 	ResponseHeader  http.Header
 	RequestPreview  BodyPreview
 	ResponsePreview BodyPreview
+	HTTPBasicAuth   bool
 	StatusCode      int
 	RequestSize     int64
 	ResponseSize    int64

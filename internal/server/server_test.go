@@ -214,6 +214,109 @@ func TestServerRoutesThroughWebSocketControlTunnel(t *testing.T) {
 	}
 }
 
+func TestServerHTTPBasicAuthProtectsTunnelBeforeForwarding(t *testing.T) {
+	var forwardedAuthorization string
+	forwarded := 0
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded++
+		forwardedAuthorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("protected"))
+	}))
+	defer local.Close()
+
+	relay, cleanup := startTestTunnelWithClientConfig(t, local.URL, client.Config{
+		HTTPBasicAuthUser:     "operator",
+		HTTPBasicAuthPassword: "secret",
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/private", nil)
+	req.Host = "alex.example.test"
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing auth status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Gatelet Tunnel") {
+		t.Fatalf("WWW-Authenticate = %q, want Gatelet Tunnel realm", got)
+	}
+	if forwarded != 0 {
+		t.Fatalf("forwarded unauthenticated request count = %d, want 0", forwarded)
+	}
+
+	wrongReq := httptest.NewRequest(http.MethodGet, "http://alex.example.test/private", nil)
+	wrongReq.Host = "alex.example.test"
+	wrongReq.SetBasicAuth("operator", "wrong")
+	wrongRec := httptest.NewRecorder()
+	relay.ServeHTTP(wrongRec, wrongReq)
+	if wrongRec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong auth status = %d, want 401", wrongRec.Code)
+	}
+	if forwarded != 0 {
+		t.Fatalf("forwarded wrong-auth request count = %d, want 0", forwarded)
+	}
+
+	okReq := httptest.NewRequest(http.MethodGet, "http://alex.example.test/private", nil)
+	okReq.Host = "alex.example.test"
+	okReq.SetBasicAuth("operator", "secret")
+	okRec := httptest.NewRecorder()
+	relay.ServeHTTP(okRec, okReq)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("correct auth status = %d, want 200", okRec.Code)
+	}
+	if body := okRec.Body.String(); body != "protected" {
+		t.Fatalf("body = %q, want protected", body)
+	}
+	if forwarded != 1 {
+		t.Fatalf("forwarded authorized request count = %d, want 1", forwarded)
+	}
+	if forwardedAuthorization != "" {
+		t.Fatalf("forwarded Authorization = %q, want stripped", forwardedAuthorization)
+	}
+
+	stats, ok := relay.TunnelStats("alex")
+	if !ok {
+		t.Fatal("TunnelStats returned no stats for alex")
+	}
+	if !stats.HTTPBasicAuth {
+		t.Fatal("TunnelStats.HTTPBasicAuth = false, want true")
+	}
+
+	enableAdmin(relay)
+	statusReq := httptest.NewRequest(http.MethodGet, "http://example.test/__gatelet/status", nil)
+	statusReq.Host = "example.test"
+	setAdminAuth(statusReq)
+	statusRec := httptest.NewRecorder()
+	relay.ServeHTTP(statusRec, statusReq)
+	if !strings.Contains(statusRec.Body.String(), `"http_basic_auth":true`) {
+		t.Fatalf("status endpoint missing http_basic_auth flag:\n%s", statusRec.Body.String())
+	}
+}
+
+func TestServerPreservesAuthorizationForUnprotectedTunnels(t *testing.T) {
+	var forwardedAuthorization string
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedAuthorization = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer local.Close()
+
+	relay, cleanup := startTestTunnel(t, local.URL)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "http://alex.example.test/api", nil)
+	req.Host = "alex.example.test"
+	req.Header.Set("Authorization", "Bearer app-token")
+	rec := httptest.NewRecorder()
+	relay.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if forwardedAuthorization != "Bearer app-token" {
+		t.Fatalf("forwarded Authorization = %q, want Bearer app-token", forwardedAuthorization)
+	}
+}
+
 func TestServerRoutesThroughSecureWebSocketControlTunnel(t *testing.T) {
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("hello over secure websocket"))
@@ -1310,6 +1413,14 @@ func startTestTunnel(t *testing.T, target string) (*Server, func()) {
 }
 
 func startTestTunnelWithLogger(t *testing.T, target string, logger *slog.Logger) (*Server, func()) {
+	return startTestTunnelWithClientConfigAndLogger(t, target, client.Config{}, logger)
+}
+
+func startTestTunnelWithClientConfig(t *testing.T, target string, config client.Config) (*Server, func()) {
+	return startTestTunnelWithClientConfigAndLogger(t, target, config, nil)
+}
+
+func startTestTunnelWithClientConfigAndLogger(t *testing.T, target string, config client.Config, logger *slog.Logger) (*Server, func()) {
 	t.Helper()
 
 	control := listenLocal(t)
@@ -1327,12 +1438,11 @@ func startTestTunnelWithLogger(t *testing.T, target string, logger *slog.Logger)
 	}()
 
 	go func() {
-		_ = client.Run(ctx, client.Config{
-			Name:       "alex",
-			ServerAddr: control.Addr().String(),
-			Target:     target,
-			Token:      "dev-token",
-		})
+		config.Name = "alex"
+		config.ServerAddr = control.Addr().String()
+		config.Target = target
+		config.Token = "dev-token"
+		_ = client.Run(ctx, config)
 	}()
 
 	waitForTunnel(t, relay, "alex")

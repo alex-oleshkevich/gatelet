@@ -184,6 +184,71 @@ func TestParseConfigAcceptsTokenIDFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestParseConfigAcceptsHTTPBasicAuth(t *testing.T) {
+	config, err := parseConfig([]string{
+		"alex",
+		"http://127.0.0.1:3000",
+		"--server", "127.0.0.1:4443",
+		"--token", "dev-token",
+		"--basic-auth", "operator:secret",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.HTTPBasicAuthUser != "operator" || config.HTTPBasicAuthPassword != "secret" {
+		t.Fatalf("basic auth = %q:%q, want operator:secret", config.HTTPBasicAuthUser, config.HTTPBasicAuthPassword)
+	}
+}
+
+func TestParseConfigAcceptsHTTPBasicAuthFromEnvironment(t *testing.T) {
+	t.Setenv("GATELET_BASIC_AUTH", "operator:secret")
+
+	config, err := parseConfig([]string{
+		"alex",
+		"http://127.0.0.1:3000",
+		"--server", "127.0.0.1:4443",
+		"--token", "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if config.HTTPBasicAuthUser != "operator" || config.HTTPBasicAuthPassword != "secret" {
+		t.Fatalf("basic auth = %q:%q, want operator:secret", config.HTTPBasicAuthUser, config.HTTPBasicAuthPassword)
+	}
+}
+
+func TestParseConfigRejectsHTTPBasicAuthWithTCP(t *testing.T) {
+	_, err := parseConfig([]string{
+		"pg",
+		"localhost:5432",
+		"--server", "wss://tun.example.test",
+		"--token", "dev-token",
+		"--tcp",
+		"--remote-port", "15432",
+		"--basic-auth", "operator:secret",
+	})
+	if err == nil {
+		t.Fatal("parseConfig returned nil error")
+	}
+}
+
+func TestParseConfigRejectsMalformedHTTPBasicAuth(t *testing.T) {
+	for _, value := range []string{"operator", ":secret", "operator:"} {
+		t.Run(value, func(t *testing.T) {
+			_, err := parseConfig([]string{
+				"alex",
+				"http://127.0.0.1:3000",
+				"--server", "127.0.0.1:4443",
+				"--token", "dev-token",
+				"--basic-auth", value,
+			})
+			if err == nil {
+				t.Fatal("parseConfig returned nil error")
+			}
+		})
+	}
+}
+
 func TestParseConfigAcceptsLogFormat(t *testing.T) {
 	config, err := parseConfig([]string{
 		"alex",

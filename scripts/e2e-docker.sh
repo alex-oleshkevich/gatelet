@@ -6,6 +6,8 @@ network="${GATELET_E2E_NETWORK:-gatelet-e2e-$$}"
 token="${GATELET_E2E_TOKEN:-e2e-token-$(date +%s)}"
 admin_user="${GATELET_E2E_ADMIN_USER:-operator}"
 admin_password="${GATELET_E2E_ADMIN_PASSWORD:-admin-secret}"
+basic_user="${GATELET_E2E_BASIC_USER:-viewer}"
+basic_password="${GATELET_E2E_BASIC_PASSWORD:-viewer-secret}"
 target="gatelet-e2e-target-$$"
 tcp_target="gatelet-e2e-tcp-target-$$"
 daemon="gatelet-e2e-daemon-$$"
@@ -39,7 +41,7 @@ wait_for_http() {
   local deadline=$((SECONDS + 20))
   while (( SECONDS < deadline )); do
     if docker run --rm --network "$network" curlimages/curl:8.8.0 \
-      -fsS -H "Host: $host" "$url" >/dev/null 2>&1; then
+      -fsS -u "$basic_user:$basic_password" -H "Host: $host" "$url" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.2
@@ -89,7 +91,8 @@ docker run -d --name "$client" --network "$network" \
   alex \
   "http://$target:5678" \
   --server "ws://$daemon:8080" \
-  --domain e2e.test >/dev/null
+  --domain e2e.test \
+  --basic-auth "$basic_user:$basic_password" >/dev/null
 
 docker run -d --name "$tcp_client" --network "$network" \
   -e GATELET_TOKEN="$token" \
@@ -124,6 +127,7 @@ status_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
   -fsS -u "$admin_user:$admin_password" -H 'Host: e2e.test' "http://$daemon:8080/__gatelet/status")"
 if ! contains "$status_body" '"active_tunnels":2' ||
   ! contains "$status_body" '"name":"pg"' ||
+  ! contains "$status_body" '"http_basic_auth":true' ||
   ! contains "$status_body" '"tunnel_type":"tcp"' ||
   ! contains "$status_body" '"remote_port":15432'; then
   echo "status endpoint missing active HTTP/TCP tunnel data: $status_body" >&2
@@ -137,7 +141,15 @@ if [[ "$metrics_body" != *"gatelet_active_tunnels 2"* ]]; then
   exit 1
 fi
 
+unauth_status="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -sS -o /dev/null -w '%{http_code}' -H 'Host: alex.e2e.test' "http://$daemon:8080/hello?name=alex")"
+if [[ "$unauth_status" != "401" ]]; then
+  echo "unauthenticated tunnel status = $unauth_status, want 401" >&2
+  exit 1
+fi
+
 body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -u "$basic_user:$basic_password" \
   -fsS -H 'Host: alex.e2e.test' "http://$daemon:8080/hello?name=alex")"
 if [[ "$body" != "gatelet e2e ok" ]]; then
   echo "unexpected GET body: $body" >&2
@@ -145,6 +157,7 @@ if [[ "$body" != "gatelet e2e ok" ]]; then
 fi
 
 post_body="$(docker run --rm --network "$network" curlimages/curl:8.8.0 \
+  -u "$basic_user:$basic_password" \
   -fsS -X POST -d 'abc=123' -H 'Host: alex.e2e.test' "http://$daemon:8080/post")"
 if [[ "$post_body" != "gatelet e2e ok" ]]; then
   echo "unexpected POST body: $post_body" >&2

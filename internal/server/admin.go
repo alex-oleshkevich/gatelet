@@ -204,6 +204,7 @@ func renderTunnelTable(ctx context.Context, w io.Writer, data adminDashboardData
 			withChildren(table.Header(), withChildren(table.Row(), join(
 				tableHead("Name"),
 				tableHead("Public URL"),
+				tableHead("Auth"),
 				tableHead("Remote"),
 				tableHead("Connected"),
 				tableHead("Last seen"),
@@ -219,7 +220,7 @@ func renderTunnelTable(ctx context.Context, w io.Writer, data adminDashboardData
 
 func tunnelRows(data adminDashboardData) templ.Component {
 	if len(data.Tunnels) == 0 {
-		return withChildren(table.Row(), withChildren(table.Cell(table.CellProps{Class: "admin-empty", Attributes: templ.Attributes{"colspan": "9"}}), text("No active tunnels")))
+		return withChildren(table.Row(), withChildren(table.Cell(table.CellProps{Class: "admin-empty", Attributes: templ.Attributes{"colspan": "10"}}), text("No active tunnels")))
 	}
 
 	rows := make([]templ.Component, 0, len(data.Tunnels))
@@ -228,6 +229,7 @@ func tunnelRows(data adminDashboardData) templ.Component {
 		rows = append(rows, withChildren(table.Row(), join(
 			withChildren(table.Cell(), withChildren(badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "admin-badge"}), text(tunnel.Name))),
 			withChildren(table.Cell(table.CellProps{Class: "admin-mono"}), text(publicURL)),
+			withChildren(table.Cell(), text(tunnelAuthLabel(tunnel))),
 			withChildren(table.Cell(table.CellProps{Class: "admin-mono"}), text(tunnel.Remote)),
 			withChildren(table.Cell(), text(formatClock(tunnel.ConnectedAt))),
 			withChildren(table.Cell(), text(formatAge(time.Since(tunnel.LastSeen)))),
@@ -238,6 +240,16 @@ func tunnelRows(data adminDashboardData) templ.Component {
 		)))
 	}
 	return join(rows...)
+}
+
+func tunnelAuthLabel(tunnel TunnelStats) string {
+	if tunnel.TunnelType == protocol.TunnelTypeTCP {
+		return "n/a"
+	}
+	if tunnel.HTTPBasicAuth {
+		return "on"
+	}
+	return "off"
 }
 
 func publicTunnelURL(domain string, tunnel TunnelStats) string {

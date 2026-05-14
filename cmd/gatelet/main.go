@@ -58,6 +58,7 @@ func parseConfig(args []string) (client.Config, error) {
 	logFormat := string(client.LogFormatText)
 	controlPlaintext := false
 	positionalTarget := ""
+	basicAuth := ""
 
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		config.Name = args[0]
@@ -80,6 +81,7 @@ func parseConfig(args []string) (client.Config, error) {
 	flags.IntVar(&config.PreviewLimit, "preview-size", 0, "maximum request/response body preview bytes captured for TUI and logs")
 	flags.BoolVar(&config.TCP, "tcp", false, "forward raw TCP instead of HTTP")
 	flags.IntVar(&config.RemotePort, "remote-port", 0, "public TCP port for --tcp tunnels")
+	flags.StringVar(&basicAuth, "basic-auth", "", "protect HTTP tunnel with Basic Auth credentials as user:password")
 	flags.BoolVar(&controlPlaintext, "control-plaintext", controlPlaintext, "disable TLS for the control connection")
 	flags.StringVar(&config.ControlCACertFile, "control-ca", "", "PEM CA bundle for verifying the control server")
 	flags.StringVar(&config.ControlServerName, "control-server-name", "", "TLS server name for the control connection")
@@ -160,8 +162,30 @@ func parseConfig(args []string) (client.Config, error) {
 	if config.TokenID == "" {
 		config.TokenID = protocol.DefaultTokenID
 	}
+	if basicAuth == "" {
+		basicAuth = os.Getenv("GATELET_BASIC_AUTH")
+	}
+	if basicAuth != "" {
+		user, password, err := parseBasicAuthSpec(basicAuth)
+		if err != nil {
+			return client.Config{}, err
+		}
+		if config.TCP {
+			return client.Config{}, fmt.Errorf("--basic-auth/GATELET_BASIC_AUTH requires an HTTP tunnel")
+		}
+		config.HTTPBasicAuthUser = user
+		config.HTTPBasicAuthPassword = password
+	}
 
 	return config, nil
+}
+
+func parseBasicAuthSpec(value string) (string, string, error) {
+	user, password, ok := strings.Cut(value, ":")
+	if !ok || user == "" || password == "" {
+		return "", "", fmt.Errorf("--basic-auth/GATELET_BASIC_AUTH must be user:password")
+	}
+	return user, password, nil
 }
 
 func writeStartup(w io.Writer, config client.Config) {
@@ -212,6 +236,7 @@ func writeUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "  --preview-size <bytes> request/response body preview cap")
 	_, _ = fmt.Fprintln(w, "  --tcp                  forward raw TCP instead of HTTP")
 	_, _ = fmt.Fprintln(w, "  --remote-port <port>   public TCP port for --tcp tunnels")
+	_, _ = fmt.Fprintln(w, "  --basic-auth <u:p>     require HTTP Basic Auth before forwarding")
 	_, _ = fmt.Fprintln(w, "  --control-plaintext    disable TLS for raw TCP development control connections")
 	_, _ = fmt.Fprintln(w, "  --control-ca <path>    CA bundle for verifying the control server")
 	_, _ = fmt.Fprintln(w, "  --control-server-name <name>")

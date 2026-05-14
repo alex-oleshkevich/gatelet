@@ -100,6 +100,39 @@ func TestParseClientHelloAcceptsTCPTunnel(t *testing.T) {
 	}
 }
 
+func TestParseClientHelloAcceptsHTTPBasicAuth(t *testing.T) {
+	hello, err := ParseClientHello([]byte(`{"name":"alex","protocol_version":2,"client_version":"gatelet-test","tunnel_type":"http","http_basic_auth":{"username":"operator","password":"secret"}}`))
+	if err != nil {
+		t.Fatalf("ParseClientHello returned error: %v", err)
+	}
+	if hello.HTTPBasicAuth == nil {
+		t.Fatal("HTTPBasicAuth = nil, want config")
+	}
+	if hello.HTTPBasicAuth.Username != "operator" || hello.HTTPBasicAuth.Password != "secret" {
+		t.Fatalf("HTTPBasicAuth = %+v, want configured credentials", hello.HTTPBasicAuth)
+	}
+}
+
+func TestParseClientHelloRejectsHTTPBasicAuthForTCP(t *testing.T) {
+	_, err := ParseClientHello([]byte(`{"name":"pg","protocol_version":2,"client_version":"gatelet-test","tunnel_type":"tcp","remote_port":15432,"http_basic_auth":{"username":"operator","password":"secret"}}`))
+	if err == nil {
+		t.Fatal("ParseClientHello returned nil error")
+	}
+}
+
+func TestParseClientHelloRejectsIncompleteHTTPBasicAuth(t *testing.T) {
+	for _, input := range []string{
+		`{"name":"alex","protocol_version":2,"client_version":"gatelet-test","http_basic_auth":{"username":"","password":"secret"}}`,
+		`{"name":"alex","protocol_version":2,"client_version":"gatelet-test","http_basic_auth":{"username":"operator","password":""}}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := ParseClientHello([]byte(input)); err == nil {
+				t.Fatal("ParseClientHello returned nil error")
+			}
+		})
+	}
+}
+
 func TestParseClientHelloRejectsInvalidTCPTunnel(t *testing.T) {
 	tests := []string{
 		`{"name":"pg","protocol_version":1,"client_version":"gatelet-test","tunnel_type":"tcp"}`,

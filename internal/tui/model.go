@@ -37,6 +37,7 @@ type requestItem struct {
 	ResponseHeader  map[string][]string
 	RequestPreview  client.BodyPreview
 	ResponsePreview client.BodyPreview
+	HTTPBasicAuth   bool
 	StatusCode      int
 	RequestSize     int64
 	ResponseSize    int64
@@ -64,26 +65,27 @@ type model struct {
 	clientErr <-chan error
 	pause     *client.PauseController
 
-	url          string
-	target       string
-	tcp          bool
-	captureDir   string
-	status       string
-	targetHealth targetHealth
-	targetLive   bool
-	message      string
-	paused       bool
-	mode         viewMode
-	inspectorTab inspectorTab
-	filtering    bool
-	filter       string
-	plainBody    bool
-	selected     int
-	detailScroll int
-	bodyScroll   int
-	width        int
-	height       int
-	now          time.Time
+	url           string
+	target        string
+	tcp           bool
+	httpBasicAuth bool
+	captureDir    string
+	status        string
+	targetHealth  targetHealth
+	targetLive    bool
+	message       string
+	paused        bool
+	mode          viewMode
+	inspectorTab  inspectorTab
+	filtering     bool
+	filter        string
+	plainBody     bool
+	selected      int
+	detailScroll  int
+	bodyScroll    int
+	width         int
+	height        int
+	now           time.Time
 
 	requests []requestItem
 	index    map[uint64]int
@@ -381,6 +383,7 @@ func (m *model) applyEvent(event client.RequestEvent) {
 		ResponseHeader:  event.ResponseHeader,
 		RequestPreview:  event.RequestPreview,
 		ResponsePreview: event.ResponsePreview,
+		HTTPBasicAuth:   event.HTTPBasicAuth,
 		StatusCode:      event.StatusCode,
 		RequestSize:     event.RequestSize,
 		ResponseSize:    event.ResponseSize,
@@ -450,6 +453,9 @@ func mergeRequestItem(dst *requestItem, src requestItem) {
 	}
 	if src.ResponsePreview.Size > 0 || src.ResponsePreview.Omitted {
 		dst.ResponsePreview = src.ResponsePreview
+	}
+	if src.HTTPBasicAuth {
+		dst.HTTPBasicAuth = true
 	}
 	if src.RequestSize > 0 {
 		dst.RequestSize = src.RequestSize

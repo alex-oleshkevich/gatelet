@@ -105,6 +105,9 @@ func formatRequestInspector(item requestItem, width int, now time.Time, plainBod
 	writeMeta(&b, "Started", item.StartedAt.Format("2006-01-02 15:04:05"))
 	writeMeta(&b, "Age", relativeAge(now, item.StartedAt))
 	writeMeta(&b, "Request Size", formatBytes(item.RequestSize))
+	if item.HTTPBasicAuth {
+		writeMeta(&b, "HTTP Auth", "enabled")
+	}
 	if item.ErrorKind != "" {
 		writeMeta(&b, "Error Kind", errorKindLabel(item.ErrorKind))
 	}
@@ -226,9 +229,17 @@ func writeHeaders(b *strings.Builder, header map[string][]string, limit int) {
 		b.WriteString("  ")
 		b.WriteString(keyStyle.Render(key + ":"))
 		b.WriteString(" ")
-		b.WriteString(valStyle.Render(strings.Join(header[key], ", ")))
+		value := strings.Join(header[key], ", ")
+		if redactHeader(key) {
+			value = "(redacted)"
+		}
+		b.WriteString(valStyle.Render(value))
 		b.WriteString("\n")
 	}
+}
+
+func redactHeader(key string) bool {
+	return strings.EqualFold(key, "Authorization") || strings.EqualFold(key, "Proxy-Authorization")
 }
 
 func writePreview(b *strings.Builder, title string, preview client.BodyPreview, width int, plain bool, state string, limit int) {

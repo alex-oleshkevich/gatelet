@@ -116,6 +116,14 @@ For an interactive local dashboard, add `--tui`:
 gatelet demo http://127.0.0.1:3000 --server 127.0.0.1:4443 --token dev-token --control-plaintext --tui
 ```
 
+To require HTTP Basic Auth before public requests are forwarded, add `--basic-auth user:password` or set `GATELET_BASIC_AUTH`:
+
+```sh
+gatelet demo http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_TOKEN" --basic-auth 'viewer:replace-with-a-long-random-password'
+```
+
+The relay enforces this on the public HTTP proxy and returns `401` before opening a tunnel stream when credentials are missing or wrong. After a successful check, Gatelet strips the public `Authorization` header before forwarding to the local target so the tunnel password is not exposed to your app or request inspector. This option is only for HTTP tunnels; raw TCP tunnels do not support HTTP Basic Auth.
+
 Send a request through the relay:
 
 ```sh
@@ -367,6 +375,7 @@ gatelet demo http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_
 | `--preview-size` | No | Maximum request/response body preview bytes captured for logs and TUI; default `4096` |
 | `--tcp` | No | Forward raw TCP instead of HTTP |
 | `--remote-port` | Required with `--tcp` | Public TCP port that `gateletd` binds for this tunnel |
+| `--basic-auth` | No | Protect an HTTP tunnel with public Basic Auth credentials as `user:password`; prefer `GATELET_BASIC_AUTH` for repeated local use |
 | `--control-plaintext` | No | Disable TLS for raw TCP control; ignored for `ws://` and `wss://` URLs |
 | `--control-ca` | No | PEM CA bundle used to verify raw TLS or `wss://` control server certificates |
 | `--control-server-name` | No | Override the TLS server name used for raw TLS or `wss://` control certificate verification |
@@ -375,7 +384,7 @@ gatelet demo http://127.0.0.1:3000 --server wss://example.com --token "$GATELET_
 
 Tunnel names must be lowercase DNS labels: letters, numbers, and interior hyphens only.
 
-In TUI mode, `gatelet` shows the public URL, tunnel connection status, local target health, request history, selected request details, headers, timing, status, errors, and capped text body previews. Target health is `ok` after normal local responses, `degraded` after local `5xx` responses, and `down` when the local target cannot be reached. Press `p` to pause or resume new requests; paused requests wait until resume or timeout. In request detail view, press `b` to open a body-only request/response viewer, `r` to replay the selected request to the local target, `y` to copy it as a curl command, and `e` to save the curl command under the Gatelet capture directory. Press `F` in detail or body view to toggle formatted JSON/plain body text.
+In TUI mode, `gatelet` shows the public URL, tunnel connection status, HTTP auth state, local target health, request history, selected request details, headers, timing, status, errors, and capped text body previews. Sensitive `Authorization` and `Proxy-Authorization` header values are redacted in the inspector. Target health is `ok` after normal local responses, `degraded` after local `5xx` responses, and `down` when the local target cannot be reached. Press `p` to pause or resume new requests; paused requests wait until resume or timeout. In request detail view, press `b` to open a body-only request/response viewer, `r` to replay the selected request to the local target, `y` to copy it as a curl command, and `e` to save the curl command under the Gatelet capture directory. Press `F` in detail or body view to toggle formatted JSON/plain body text.
 
 List filters split on spaces and AND every term across method, path, status, remote IP, host, and error text. For example, `/ POST /api 500` shows only POST requests under `/api` with status `500`.
 
@@ -406,9 +415,10 @@ The relay sets request timeouts and header limits on its public HTTP server. It 
 - Broken or unavailable tunnels return `502`.
 - Hostnames are matched case-insensitively and may include a trailing dot.
 - The forwarded request preserves the original public `Host` header.
+- Per-tunnel HTTP Basic Auth is enforced on `gateletd` before forwarding and is configured by the client with `--basic-auth` or `GATELET_BASIC_AUTH`.
 - Tokens are not sent directly during tunnel registration; the client sends a token ID and proves token knowledge with an HMAC challenge response after the control transport is established.
 - `gateletd` can accept multiple token IDs for rotation. Omit `--token-id` for legacy clients that use the implicit `default` token.
-- The control protocol currently supports protocol version `1`. Unsupported clients receive `ERR unsupported protocol version`.
+- The control protocol supports protocol versions `1` and `2`. Current clients use version `2` so per-tunnel HTTP auth metadata is not silently ignored by older relays. Unsupported clients receive `ERR unsupported protocol version`.
 - The yamux control session uses periodic ping heartbeats. Dead or unresponsive tunnels are closed and removed from the relay session table.
 
 ## Development

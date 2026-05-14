@@ -155,7 +155,7 @@ func TestRunDoesNotSendTokenInInitialHandshake(t *testing.T) {
 		if strings.Contains(line, "secret-token") {
 			t.Fatalf("initial handshake leaked token: %q", line)
 		}
-		if !strings.Contains(line, `"protocol_version":1`) {
+		if !strings.Contains(line, fmt.Sprintf(`"protocol_version":%d`, protocol.CurrentProtocolVersion)) {
 			t.Fatalf("initial handshake missing protocol version: %q", line)
 		}
 		if !strings.Contains(line, `"client_version":`) {

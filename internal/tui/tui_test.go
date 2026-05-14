@@ -683,6 +683,35 @@ func TestInspectorIdentifiesLocalTargetErrors(t *testing.T) {
 	}
 }
 
+func TestInspectorShowsHTTPBasicAuthEnabledWithoutLeakingCredentials(t *testing.T) {
+	m := detailActionModel()
+	m.httpBasicAuth = true
+	m.requests[0].HTTPBasicAuth = true
+	m.requests[0].RequestHeader["Authorization"] = []string{"Basic b3BlcmF0b3I6c2VjcmV0"}
+
+	plain := stripANSI(m.View())
+	for _, want := range []string{"HTTP Auth: enabled", "Authorization: (redacted)"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("inspector missing %q:\n%s", want, plain)
+		}
+	}
+	for _, notWant := range []string{"b3BlcmF0b3I6c2VjcmV0", "operator", "secret"} {
+		if strings.Contains(plain, notWant) {
+			t.Fatalf("inspector leaked %q:\n%s", notWant, plain)
+		}
+	}
+}
+
+func TestHeaderShowsHTTPBasicAuthState(t *testing.T) {
+	m := detailActionModel()
+	m.httpBasicAuth = true
+
+	plain := stripANSI(m.renderHeader(120))
+	if !strings.Contains(plain, "auth ON") {
+		t.Fatalf("header missing auth state:\n%s", plain)
+	}
+}
+
 func TestInspectorRequestTabFormatsJSONBody(t *testing.T) {
 	now := time.Date(2026, 5, 13, 17, 0, 0, 0, time.UTC)
 	m := model{

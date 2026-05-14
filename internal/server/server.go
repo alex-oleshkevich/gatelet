@@ -75,6 +75,7 @@ type tunnelSession struct {
 	remote          string
 	tunnelType      string
 	remotePort      int
+	httpBasicAuth   *protocol.HTTPBasicAuthConfig
 	tcpListener     net.Listener
 	requests        uint64
 	bytesIn         int64
@@ -90,6 +91,7 @@ type TunnelStats struct {
 	Remote          string
 	TunnelType      string
 	RemotePort      int
+	HTTPBasicAuth   bool
 	Requests        uint64
 	BytesIn         int64
 	BytesOut        int64
@@ -113,16 +115,17 @@ type statusTotals struct {
 }
 
 type tunnelStatus struct {
-	Name         string         `json:"name"`
-	Remote       string         `json:"remote"`
-	TunnelType   string         `json:"tunnel_type"`
-	RemotePort   int            `json:"remote_port,omitempty"`
-	Requests     uint64         `json:"requests"`
-	BytesIn      int64          `json:"bytes_in"`
-	BytesOut     int64          `json:"bytes_out"`
-	StatusCounts map[int]uint64 `json:"status_counts"`
-	ConnectedAt  string         `json:"connected_at"`
-	LastSeen     string         `json:"last_seen"`
+	Name          string         `json:"name"`
+	Remote        string         `json:"remote"`
+	TunnelType    string         `json:"tunnel_type"`
+	RemotePort    int            `json:"remote_port,omitempty"`
+	HTTPBasicAuth bool           `json:"http_basic_auth"`
+	Requests      uint64         `json:"requests"`
+	BytesIn       int64          `json:"bytes_in"`
+	BytesOut      int64          `json:"bytes_out"`
+	StatusCounts  map[int]uint64 `json:"status_counts"`
+	ConnectedAt   string         `json:"connected_at"`
+	LastSeen      string         `json:"last_seen"`
 }
 
 func New(config Config) *Server {
@@ -293,11 +296,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("request received", "name", name, "host", r.Host, "method", r.Method, "uri", r.URL.RequestURI(), "remote", r.RemoteAddr)
 
-	session := s.session(name)
+	session, httpBasicAuth := s.httpTunnel(name)
 	if session == nil {
 		s.logger.Warn("tunnel not found", "name", name, "host", r.Host, "method", r.Method, "uri", r.URL.RequestURI())
 		http.NotFound(w, r)
 		return
+	}
+	if httpBasicAuth != nil {
+		if !s.requireTunnelBasicAuth(w, r, name, httpBasicAuth) {
+			s.recordRequest(name, http.StatusUnauthorized, 0, 0, time.Since(started))
+			return
+		}
+		r.Header.Del("Authorization")
 	}
 
 	stream, err := session.OpenStream()
@@ -496,6 +506,7 @@ func (s *Server) register(hello protocol.ClientHello, session *yamux.Session, re
 		remote:          remote,
 		tunnelType:      hello.TunnelType,
 		remotePort:      hello.RemotePort,
+		httpBasicAuth:   hello.HTTPBasicAuth,
 		tcpListener:     tcpListener,
 		statusCounts:    make(map[int]uint64),
 		durationBuckets: make([]uint64, len(durationBuckets)+1),
@@ -508,7 +519,7 @@ func (s *Server) register(hello protocol.ClientHello, session *yamux.Session, re
 	s.sessions[hello.Name] = record
 	s.mu.Unlock()
 
-	attrs := []any{"name", hello.Name, "remote", remote, "tunnel_type", hello.TunnelType, "connected_at", now}
+	attrs := []any{"name", hello.Name, "remote", remote, "tunnel_type", hello.TunnelType, "http_basic_auth", hello.HTTPBasicAuth != nil, "connected_at", now}
 	if hello.TunnelType == protocol.TunnelTypeTCP {
 		attrs = append(attrs, "url", fmt.Sprintf("tcp://%s.%s:%d", hello.Name, s.domain, hello.RemotePort), "remote_port", hello.RemotePort)
 	} else {
@@ -638,16 +649,17 @@ func (s *Server) serveStatus(w http.ResponseWriter) {
 		response.Totals.BytesIn += tunnel.BytesIn
 		response.Totals.BytesOut += tunnel.BytesOut
 		response.Tunnels = append(response.Tunnels, tunnelStatus{
-			Name:         tunnel.Name,
-			Remote:       tunnel.Remote,
-			TunnelType:   tunnel.TunnelType,
-			RemotePort:   tunnel.RemotePort,
-			Requests:     tunnel.Requests,
-			BytesIn:      tunnel.BytesIn,
-			BytesOut:     tunnel.BytesOut,
-			StatusCounts: tunnel.StatusCounts,
-			ConnectedAt:  tunnel.ConnectedAt.Format(time.RFC3339Nano),
-			LastSeen:     tunnel.LastSeen.Format(time.RFC3339Nano),
+			Name:          tunnel.Name,
+			Remote:        tunnel.Remote,
+			TunnelType:    tunnel.TunnelType,
+			RemotePort:    tunnel.RemotePort,
+			HTTPBasicAuth: tunnel.HTTPBasicAuth,
+			Requests:      tunnel.Requests,
+			BytesIn:       tunnel.BytesIn,
+			BytesOut:      tunnel.BytesOut,
+			StatusCounts:  tunnel.StatusCounts,
+			ConnectedAt:   tunnel.ConnectedAt.Format(time.RFC3339Nano),
+			LastSeen:      tunnel.LastSeen.Format(time.RFC3339Nano),
 		})
 	}
 
@@ -749,6 +761,19 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+func (s *Server) requireTunnelBasicAuth(w http.ResponseWriter, r *http.Request, name string, auth *protocol.HTTPBasicAuthConfig) bool {
+	user, password, ok := r.BasicAuth()
+	if !ok ||
+		subtle.ConstantTimeCompare([]byte(user), []byte(auth.Username)) != 1 ||
+		subtle.ConstantTimeCompare([]byte(password), []byte(auth.Password)) != 1 {
+		s.logger.Warn("tunnel basic auth failed", "name", name, "host", r.Host, "method", r.Method, "uri", r.URL.RequestURI(), "remote", r.RemoteAddr)
+		w.Header().Set("WWW-Authenticate", `Basic realm="Gatelet Tunnel", charset="UTF-8"`)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
 func (s *Server) validAdminActionToken(r *http.Request) bool {
 	token := r.Header.Get("X-Gatelet-Admin-Token")
 	if token == "" {
@@ -779,6 +804,7 @@ func (t *tunnelSession) stats(name string) TunnelStats {
 		Remote:          t.remote,
 		TunnelType:      t.tunnelType,
 		RemotePort:      t.remotePort,
+		HTTPBasicAuth:   t.httpBasicAuth != nil,
 		Requests:        t.requests,
 		BytesIn:         t.bytesIn,
 		BytesOut:        t.bytesOut,
@@ -789,15 +815,15 @@ func (t *tunnelSession) stats(name string) TunnelStats {
 	}
 }
 
-func (s *Server) session(name string) *yamux.Session {
+func (s *Server) httpTunnel(name string) (*yamux.Session, *protocol.HTTPBasicAuthConfig) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	tunnel := s.sessions[name]
 	if tunnel == nil || tunnel.tunnelType != protocol.TunnelTypeHTTP || tunnel.session.IsClosed() {
-		return nil
+		return nil, nil
 	}
-	return tunnel.session
+	return tunnel.session, tunnel.httpBasicAuth
 }
 
 func (s *Server) nameFromHost(host string) (string, bool) {

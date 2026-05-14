@@ -30,17 +30,19 @@ const defaultReconnectMaxDelay = 30 * time.Second
 var localHTTPClient = newLocalHTTPClient()
 
 type Config struct {
-	Name          string
-	ServerAddr    string
-	Target        string
-	Token         string
-	TokenID       string
-	Domain        string
-	TUI           bool
-	TCP           bool
-	RemotePort    int
-	ControlTLS    bool
-	ClientVersion string
+	Name                  string
+	ServerAddr            string
+	Target                string
+	Token                 string
+	TokenID               string
+	Domain                string
+	TUI                   bool
+	TCP                   bool
+	RemotePort            int
+	HTTPBasicAuthUser     string
+	HTTPBasicAuthPassword string
+	ControlTLS            bool
+	ClientVersion         string
 
 	Events                chan<- RequestEvent
 	PauseController       *PauseController
@@ -130,13 +132,20 @@ func runSession(ctx context.Context, config Config) (bool, error) {
 		_ = conn.Close()
 	}()
 
-	if err := json.NewEncoder(conn).Encode(protocol.ClientHello{
+	hello := protocol.ClientHello{
 		Name:            config.Name,
 		ProtocolVersion: protocol.CurrentProtocolVersion,
 		ClientVersion:   config.ClientVersion,
 		TunnelType:      tunnelType(config),
 		RemotePort:      config.RemotePort,
-	}); err != nil {
+	}
+	if config.HTTPBasicAuthEnabled() {
+		hello.HTTPBasicAuth = &protocol.HTTPBasicAuthConfig{
+			Username: config.HTTPBasicAuthUser,
+			Password: config.HTTPBasicAuthPassword,
+		}
+	}
+	if err := json.NewEncoder(conn).Encode(hello); err != nil {
 		_ = conn.Close()
 		return false, fmt.Errorf("send client hello: %w", err)
 	}
@@ -214,6 +223,10 @@ func tunnelType(config Config) string {
 		return protocol.TunnelTypeTCP
 	}
 	return protocol.TunnelTypeHTTP
+}
+
+func (c Config) HTTPBasicAuthEnabled() bool {
+	return c.HTTPBasicAuthUser != "" && c.HTTPBasicAuthPassword != ""
 }
 
 type terminalControlError struct {
@@ -428,20 +441,22 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		Host:          req.Host,
 		RemoteAddr:    remoteAddr,
 		RequestHeader: cloneHeader(req.Header),
+		HTTPBasicAuth: config.HTTPBasicAuthEnabled(),
 	})
 
 	if config.PauseController != nil {
 		wasPaused := config.PauseController.IsPaused()
 		if wasPaused {
 			emit(config.Events, RequestEvent{
-				ID:         id,
-				Type:       EventRequestQueued,
-				Time:       time.Now(),
-				Method:     req.Method,
-				RequestURI: requestURI,
-				Host:       req.Host,
-				RemoteAddr: remoteAddr,
-				QueueDepth: config.PauseController.QueueDepth() + 1,
+				ID:            id,
+				Type:          EventRequestQueued,
+				Time:          time.Now(),
+				Method:        req.Method,
+				RequestURI:    requestURI,
+				Host:          req.Host,
+				RemoteAddr:    remoteAddr,
+				HTTPBasicAuth: config.HTTPBasicAuthEnabled(),
+				QueueDepth:    config.PauseController.QueueDepth() + 1,
 			})
 		}
 		pauseCtx, cancel := context.WithTimeout(ctx, config.PauseTimeout)
@@ -449,14 +464,15 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		cancel()
 		if queued && !wasPaused {
 			emit(config.Events, RequestEvent{
-				ID:         id,
-				Type:       EventRequestQueued,
-				Time:       time.Now(),
-				Method:     req.Method,
-				RequestURI: requestURI,
-				Host:       req.Host,
-				RemoteAddr: remoteAddr,
-				QueueDepth: config.PauseController.QueueDepth(),
+				ID:            id,
+				Type:          EventRequestQueued,
+				Time:          time.Now(),
+				Method:        req.Method,
+				RequestURI:    requestURI,
+				Host:          req.Host,
+				RemoteAddr:    remoteAddr,
+				HTTPBasicAuth: config.HTTPBasicAuthEnabled(),
+				QueueDepth:    config.PauseController.QueueDepth(),
 			})
 		}
 		if err != nil {
@@ -475,6 +491,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 				Host:           req.Host,
 				RemoteAddr:     remoteAddr,
 				RequestPreview: requestPreview,
+				HTTPBasicAuth:  config.HTTPBasicAuthEnabled(),
 				RequestSize:    requestSize,
 				Duration:       time.Since(started),
 				Error:          err.Error(),
@@ -489,27 +506,28 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	targetURL, err := targetRequestURL(config.Target, requestURI)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local target")
-		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
+		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget, config.HTTPBasicAuthEnabled())
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
 		return
 	}
 
 	emit(config.Events, RequestEvent{
-		ID:         id,
-		Type:       EventRequestForwarding,
-		Time:       time.Now(),
-		Method:     req.Method,
-		RequestURI: requestURI,
-		TargetURL:  targetURL,
-		Host:       req.Host,
-		RemoteAddr: remoteAddr,
+		ID:            id,
+		Type:          EventRequestForwarding,
+		Time:          time.Now(),
+		Method:        req.Method,
+		RequestURI:    requestURI,
+		TargetURL:     targetURL,
+		Host:          req.Host,
+		RemoteAddr:    remoteAddr,
+		HTTPBasicAuth: config.HTTPBasicAuthEnabled(),
 	})
 
 	outReq, err := http.NewRequest(req.Method, targetURL, req.Body)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "bad local request")
-		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
+		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget, config.HTTPBasicAuthEnabled())
 		event.TargetURL = targetURL
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
@@ -521,7 +539,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	resp, err := localHTTPClient.Do(outReq)
 	if err != nil {
 		writeError(stream, http.StatusBadGateway, "local target unavailable")
-		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget)
+		event := failedEvent(id, req, reqPreview, nil, started, err, ErrorKindLocalTarget, config.HTTPBasicAuthEnabled())
 		event.TargetURL = targetURL
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
@@ -540,6 +558,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		RemoteAddr:     remoteAddr,
 		RequestHeader:  cloneHeader(req.Header),
 		ResponseHeader: cloneHeader(resp.Header),
+		HTTPBasicAuth:  config.HTTPBasicAuthEnabled(),
 		StatusCode:     resp.StatusCode,
 		Duration:       time.Since(started),
 	})
@@ -548,7 +567,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 	resp.Body = respBody
 	if err := resp.Write(stream); err != nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		event := failedEvent(id, req, reqPreview, respPreview, started, err, ErrorKindTunnel)
+		event := failedEvent(id, req, reqPreview, respPreview, started, err, ErrorKindTunnel, config.HTTPBasicAuthEnabled())
 		event.TargetURL = targetURL
 		logRequest(config.RequestLog, config.LogFormat, event)
 		emit(config.Events, event)
@@ -569,6 +588,7 @@ func handleStream(ctx context.Context, stream net.Conn, config Config) {
 		ResponseHeader:  cloneHeader(resp.Header),
 		RequestPreview:  requestPreview,
 		ResponsePreview: responsePreview,
+		HTTPBasicAuth:   config.HTTPBasicAuthEnabled(),
 		StatusCode:      resp.StatusCode,
 		RequestSize:     requestPreview.Size,
 		ResponseSize:    responsePreview.Size,
@@ -880,7 +900,7 @@ func logRequest(w io.Writer, format LogFormat, event RequestEvent) {
 	_, _ = fmt.Fprintln(w, line)
 }
 
-func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, respPreview *bodyPreviewCapture, started time.Time, err error, kind ErrorKind) RequestEvent {
+func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, respPreview *bodyPreviewCapture, started time.Time, err error, kind ErrorKind, httpBasicAuth bool) RequestEvent {
 	requestPreview := reqPreview.Preview()
 	requestSize := requestPreview.Size
 	if requestSize == 0 && req.ContentLength > 0 {
@@ -896,6 +916,7 @@ func failedEvent(id uint64, req *http.Request, reqPreview *bodyPreviewCapture, r
 		RemoteAddr:     requestRemoteAddr(req),
 		RequestHeader:  cloneHeader(req.Header),
 		RequestPreview: requestPreview,
+		HTTPBasicAuth:  httpBasicAuth,
 		RequestSize:    requestSize,
 		Duration:       time.Since(started),
 		Error:          err.Error(),

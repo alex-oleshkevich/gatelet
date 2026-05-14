@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	CurrentProtocolVersion = 1
+	MinimumProtocolVersion = 1
+	CurrentProtocolVersion = 2
 	DefaultClientVersion   = "gatelet-dev"
 	DefaultTokenID         = "default"
 	TunnelTypeHTTP         = "http"
@@ -27,11 +28,17 @@ const (
 )
 
 type ClientHello struct {
-	Name            string `json:"name"`
-	ProtocolVersion int    `json:"protocol_version"`
-	ClientVersion   string `json:"client_version"`
-	TunnelType      string `json:"tunnel_type,omitempty"`
-	RemotePort      int    `json:"remote_port,omitempty"`
+	Name            string               `json:"name"`
+	ProtocolVersion int                  `json:"protocol_version"`
+	ClientVersion   string               `json:"client_version"`
+	TunnelType      string               `json:"tunnel_type,omitempty"`
+	RemotePort      int                  `json:"remote_port,omitempty"`
+	HTTPBasicAuth   *HTTPBasicAuthConfig `json:"http_basic_auth,omitempty"`
+}
+
+type HTTPBasicAuthConfig struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type UnsupportedProtocolError struct {
@@ -78,7 +85,7 @@ func ParseClientHello(data []byte) (ClientHello, error) {
 	if err := ValidateName(hello.Name); err != nil {
 		return ClientHello{}, err
 	}
-	if hello.ProtocolVersion != CurrentProtocolVersion {
+	if hello.ProtocolVersion < MinimumProtocolVersion || hello.ProtocolVersion > CurrentProtocolVersion {
 		return ClientHello{}, UnsupportedProtocolError{Version: hello.ProtocolVersion}
 	}
 	if hello.ClientVersion == "" {
@@ -93,11 +100,17 @@ func ParseClientHello(data []byte) (ClientHello, error) {
 			return ClientHello{}, errors.New("remote port is only valid for tcp tunnels")
 		}
 	case TunnelTypeTCP:
+		if hello.HTTPBasicAuth != nil {
+			return ClientHello{}, errors.New("http basic auth is only valid for http tunnels")
+		}
 		if hello.RemotePort < 1 || hello.RemotePort > 65535 {
 			return ClientHello{}, errors.New("tcp remote port must be between 1 and 65535")
 		}
 	default:
 		return ClientHello{}, fmt.Errorf("unsupported tunnel type %q", hello.TunnelType)
+	}
+	if hello.HTTPBasicAuth != nil && (hello.HTTPBasicAuth.Username == "" || hello.HTTPBasicAuth.Password == "") {
+		return ClientHello{}, errors.New("http basic auth requires username and password")
 	}
 
 	return hello, nil
