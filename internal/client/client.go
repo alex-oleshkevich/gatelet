@@ -37,6 +37,10 @@ type Config struct {
 	TokenID               string
 	Domain                string
 	TUI                   bool
+	Agent                 bool
+	Inspect               bool
+	InspectAddr           string
+	InspectToken          string
 	HTTPBasicAuthUser     string
 	HTTPBasicAuthPassword string
 	ControlTLS            bool
