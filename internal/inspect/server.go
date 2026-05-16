@@ -309,11 +309,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	events, cancel := s.store.Subscribe()
+	defer cancel()
+
 	_, _ = fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
-	events, cancel := s.store.Subscribe()
-	defer cancel()
 	for {
 		select {
 		case event := <-events:
