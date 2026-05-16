@@ -415,7 +415,10 @@ func runInspectCommand(args []string, stdout io.Writer) error {
 		return fmt.Errorf("inspect command is required")
 	}
 	command := args[0]
-	options, err := parseInspectCommandOptions("gatelet inspect "+command, args[1:], command == "request" || command == "replay")
+	if !isInspectCommand(command) {
+		return fmt.Errorf("unknown inspect command %q", command)
+	}
+	options, err := parseInspectCommandOptions("gatelet inspect "+command, args[1:], inspectCommandRequiresID(command))
 	if err != nil {
 		return err
 	}
@@ -453,6 +456,19 @@ func runInspectCommand(args []string, stdout io.Writer) error {
 	default:
 		return fmt.Errorf("unknown inspect command %q", command)
 	}
+}
+
+func isInspectCommand(command string) bool {
+	switch command {
+	case "status", "capabilities", "requests", "request", "replay", "pause", "resume", "openapi", "wait":
+		return true
+	default:
+		return false
+	}
+}
+
+func inspectCommandRequiresID(command string) bool {
+	return command == "request" || command == "replay"
 }
 
 func runCompletionCommand(args []string, stdout io.Writer) error {
